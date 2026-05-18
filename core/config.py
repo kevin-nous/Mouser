@@ -111,6 +111,7 @@ DEFAULT_CONFIG = {
         "device_layout_overrides": {},
         "language": "en",
         "haptic_level": 2,          # 0=subtle, 1=low, 2=medium, 3=high
+        "haptic_enabled": True,     # global haptic on/off
     },
 }
 
@@ -361,6 +362,11 @@ def _migrate(cfg):
         for pdata in cfg.get("profiles", {}).values():
             pdata.setdefault("button_haptic", {})
         cfg["version"] = 10
+
+    if version < 11:
+        # v10 -> v11: add global haptic enabled flag.
+        cfg.setdefault("settings", {}).setdefault("haptic_enabled", True)
+        cfg["version"] = 11
 
     cfg.setdefault("settings", {})
     cfg["settings"].setdefault("appearance_mode", "system")

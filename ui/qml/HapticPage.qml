@@ -70,9 +70,49 @@ Item {
 
             Item { width: 1; height: 20 }
 
+            // ── Enable / Disable Toggle Card ─────────────────────────
+            Rectangle {
+                width: parent.width - 72
+                anchors.horizontalCenter: parent.horizontalCenter
+                height: 56
+                radius: Theme.radius
+                color: hapticPage.theme.bgCard
+                border.width: 1
+                border.color: hapticPage.theme.border
+
+                Row {
+                    anchors {
+                        left: parent.left
+                        right: parent.right
+                        verticalCenter: parent.verticalCenter
+                        leftMargin: 20
+                        rightMargin: 20
+                    }
+
+                    Text {
+                        text: s["haptic.enabled"] || "Enable Haptic Feedback"
+                        font { family: uiState.fontFamily; pixelSize: 14; bold: true }
+                        color: hapticPage.theme.textPrimary
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - hapticEnableSwitch.width
+                    }
+
+                    Switch {
+                        id: hapticEnableSwitch
+                        checked: backend.hapticEnabled
+                        anchors.verticalCenter: parent.verticalCenter
+                        onToggled: backend.setHapticEnabled(checked)
+                    }
+                }
+            }
+
+            Item { width: 1; height: 16 }
+
             // ── Feedback Intensity Card ──────────────────────────────
             Rectangle {
                 id: levelCard
+                opacity: backend.hapticEnabled ? 1.0 : 0.4
+                Behavior on opacity { NumberAnimation { duration: 150 } }
                 width: parent.width - 72
                 anchors.horizontalCenter: parent.horizontalCenter
                 height: levelContent.implicitHeight + 40
@@ -155,8 +195,9 @@ Item {
                                 MouseArea {
                                     id: levelMa
                                     anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
+                                    hoverEnabled: backend.hapticEnabled
+                                    enabled: backend.hapticEnabled
+                                    cursorShape: backend.hapticEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: backend.setHapticLevel(levelData.value)
                                 }
 
@@ -173,6 +214,8 @@ Item {
             // ── Test Button Card ─────────────────────────────────────
             Rectangle {
                 id: testCard
+                opacity: backend.hapticEnabled ? 1.0 : 0.4
+                Behavior on opacity { NumberAnimation { duration: 150 } }
                 width: parent.width - 72
                 anchors.horizontalCenter: parent.horizontalCenter
                 height: testContent.implicitHeight + 40
@@ -237,8 +280,9 @@ Item {
                         MouseArea {
                             id: testBtnMa
                             anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
+                            hoverEnabled: backend.hapticEnabled
+                            enabled: backend.hapticEnabled
+                            cursorShape: backend.hapticEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: backend.playHapticTest()
                         }
 

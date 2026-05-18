@@ -1268,39 +1268,6 @@ Item {
                                     }
                                 }
 
-                                // Per-button haptic toggle (MX Master 4 only)
-                                Row {
-                                    id: hapticToggleRow
-                                    visible: backend.hapticSupported && selectedButton !== ""
-                                    spacing: 6
-                                    Layout.alignment: Qt.AlignVCenter
-
-                                    Text {
-                                        text: s["mouse.haptic_feedback"] || "Haptic"
-                                        font { family: uiState.fontFamily; pixelSize: 12 }
-                                        color: theme.textSecondary
-                                        anchors.verticalCenter: parent.verticalCenter
-                                    }
-
-                                    Switch {
-                                        id: hapticSwitch
-                                        checked: backend.hapticSupported && selectedButton !== ""
-                                                 ? (lm.strings, backend.buttonHapticEnabled(selectedButton))
-                                                 : true
-                                        onToggled: {
-                                            if (selectedButton !== "")
-                                                backend.setButtonHaptic(selectedButton, checked)
-                                        }
-
-                                        Connections {
-                                            target: backend
-                                            function onMappingsChanged() {
-                                                if (backend.hapticSupported && selectedButton !== "")
-                                                    hapticSwitch.checked = backend.buttonHapticEnabled(selectedButton)
-                                            }
-                                        }
-                                    }
-                                }
                             }
 
                             // Horizontal scroll: left + right rows

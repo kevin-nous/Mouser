@@ -300,6 +300,10 @@ class Backend(QObject):
     def hapticLevel(self):
         return int(self._cfg.get("settings", {}).get("haptic_level", 2))
 
+    @Property(bool, notify=hapticChanged)
+    def hapticEnabled(self):
+        return bool(self._cfg.get("settings", {}).get("haptic_enabled", True))
+
     @Property(bool, notify=settingsChanged)
     def startMinimized(self):
         return bool(self._cfg.get("settings", {}).get("start_minimized", True))
@@ -638,6 +642,14 @@ class Backend(QObject):
                 daemon=True, name="SetHapticLevel"
             ).start()
 
+    @Slot(bool)
+    def setHapticEnabled(self, enabled):
+        self._cfg.setdefault("settings", {})["haptic_enabled"] = bool(enabled)
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.cfg = self._cfg
+        self.hapticChanged.emit()
+
     @Slot()
     def playHapticTest(self):
         if self._engine:
@@ -647,16 +659,16 @@ class Backend(QObject):
                 daemon=True, name="HapticTest"
             ).start()
 
-    @Slot(str, result=bool)
-    def buttonHapticEnabled(self, button):
-        """Return whether haptic is enabled for the given button in the active profile."""
-        profile = self._cfg.get("active_profile", "default")
+    @Slot(str, str, result=bool)
+    def buttonHapticEnabled(self, profileName, button):
+        """Return whether haptic is enabled for the given button in the given profile."""
+        profile = profileName or self._cfg.get("active_profile", "default")
         return get_button_haptic(self._cfg, button, profile)
 
-    @Slot(str, bool)
-    def setButtonHaptic(self, button, enabled):
-        """Set per-button haptic enabled flag in the active profile."""
-        profile = self._cfg.get("active_profile", "default")
+    @Slot(str, str, bool)
+    def setButtonHaptic(self, profileName, button, enabled):
+        """Set per-button haptic enabled flag in the given profile."""
+        profile = profileName or self._cfg.get("active_profile", "default")
         self._cfg = set_button_haptic(self._cfg, button, enabled, profile)
         if self._engine:
             self._engine.cfg = self._cfg
