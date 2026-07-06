@@ -14,7 +14,8 @@ from core.key_simulator import (
 from core.config import (
     load_config, get_active_mappings, get_profile_for_app,
     BUTTON_TO_EVENTS, GESTURE_DIRECTION_BUTTONS, GESTURE_DIRECTIONS,
-    GESTURE_HOLD_FLOOR_MS_DEFAULT, gesture_owners, gesture_bindings_for,
+    GESTURE_HOLD_FLOOR_MS_DEFAULT, BUTTON_GESTURE_OWNERS, TILT_GESTURE_OWNERS,
+    TILT_GESTURE_RELEASE_MS_DEFAULT, gesture_owners, gesture_bindings_for,
     save_config,
 )
 from core.app_detector import AppDetector
@@ -98,14 +99,32 @@ class Engine:
     # Hook wiring
     # ------------------------------------------------------------------
     def _active_gesture_owners(self, cfg, settings):
-        """Owners actually armed at the hook (finding #1): config-bound AND
-        the UI enable toggle (settings.gesture_owner_enabled) is on AND the
-        connected device can host a per-button gesture on that owner --
-        mirrors the capability check in ui.backend.gestureEligibleOwners.
-        Direction bindings themselves are left untouched in config; this only
-        narrows what gets passed to the hook as armed. No device connected
-        means arming is moot, so nothing is eligible."""
-        bound = gesture_owners(cfg)
+        """Button owners (back/forward/middle) actually armed at the hook
+        (finding #1): config-bound AND the UI enable toggle
+        (settings.gesture_owner_enabled) is on AND the connected device can
+        host a per-button gesture on that owner -- mirrors the capability
+        check in ui.backend.gestureEligibleOwners. Direction bindings
+        themselves are left untouched in config; this only narrows what gets
+        passed to the hook as armed. No device connected means arming is
+        moot, so nothing is eligible. Restricted to BUTTON_GESTURE_OWNERS so
+        a bound+enabled+eligible tilt owner (gesture_owners() is the
+        button+tilt union) isn't also fed to the hook's button-owner path --
+        see _active_tilt_owners for the tilt counterpart."""
+        bound = gesture_owners(cfg) & set(BUTTON_GESTURE_OWNERS)
+        return self._gate_owner_eligibility(bound, settings)
+
+    def _active_tilt_owners(self, cfg, settings):
+        """Tilt owners (tilt_left/tilt_right) actually armed on the hscroll
+        pulse stream: config-bound AND the UI enable toggle is on AND the
+        connected device is tilt-eligible (supports_tilt_gestures, exposed as
+        gesture_<owner>_left in supported_buttons). Same gate as
+        _active_gesture_owners, restricted to TILT_GESTURE_OWNERS."""
+        bound = gesture_owners(cfg) & set(TILT_GESTURE_OWNERS)
+        return self._gate_owner_eligibility(bound, settings)
+
+    def _gate_owner_eligibility(self, bound, settings):
+        """Shared enable+device-eligibility filter for an already owner-kind-
+        scoped `bound` set. See _active_gesture_owners / _active_tilt_owners."""
         if not bound:
             return set()
         device = getattr(self, "connected_device", None)
@@ -130,15 +149,19 @@ class Engine:
             self.hook.ignore_trackpad = settings.get("ignore_trackpad", True)
         self.hook.debug_mode = self._debug_events_enabled
         owners = self._active_gesture_owners(self.cfg, settings)
+        tilt_owners = self._active_tilt_owners(self.cfg, settings)
         self.hook.configure_gestures(
-            enabled=bool(owners) or any(mappings.get(key, "none") != "none"
-                                        for key in GESTURE_DIRECTION_BUTTONS),
+            enabled=bool(owners) or bool(tilt_owners) or any(
+                mappings.get(key, "none") != "none" for key in GESTURE_DIRECTION_BUTTONS
+            ),
             threshold=settings.get("gesture_threshold", 50),
             deadzone=settings.get("gesture_deadzone", 40),
             timeout_ms=settings.get("gesture_timeout_ms", 3000),
             cooldown_ms=settings.get("gesture_cooldown_ms", 500),
             owners=owners,
             hold_floor_ms=settings.get("gesture_hold_floor_ms", GESTURE_HOLD_FLOOR_MS_DEFAULT),
+            tilt_owners=tilt_owners,
+            tilt_release_ms=settings.get("tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT),
         )
         # Divert mode shift CID only when the device has the button and
         # at least one profile maps it to an action.  When no device is
@@ -197,11 +220,18 @@ class Engine:
                     else:
                         self.hook.register(evt_type, self._make_handler(action_id))
 
-        # Per-owner event-tap gestures (issue 004): the kernel tags the fired
-        # gesture with the active owner in raw_data rather than a namespaced
-        # event, so route (owner, direction) -> gesture_<owner>_<dir> here.
-        if owners:
-            owner_bindings = {owner: gesture_bindings_for(self.cfg, owner) for owner in owners}
+        # Per-owner event-tap + tilt gestures (issue 004 + tilt): the kernel
+        # tags the fired gesture with the active owner in raw_data rather than
+        # a namespaced event, so route (owner, direction) -> gesture_<owner>_<dir>
+        # here for BOTH button owners (armed via owners=) and tilt owners
+        # (armed via tilt_owners=) -- the routing itself doesn't care which
+        # arming path fired the swipe. A tilt TAP instead reuses the existing
+        # hscroll_left/hscroll_right mapping above, no routing needed here.
+        active_owners = owners | tilt_owners
+        if active_owners:
+            owner_bindings = {
+                owner: gesture_bindings_for(self.cfg, owner) for owner in active_owners
+            }
             for direction in GESTURE_DIRECTIONS:
                 self.hook.register(
                     f"gesture_swipe_{direction}",

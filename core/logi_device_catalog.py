@@ -46,6 +46,16 @@ MX_ANYWHERE_2S_BUTTONS = (
     "gesture_middle_right",
     "gesture_middle_up",
     "gesture_middle_down",
+    # Tilt (horizontal-scroll) slide gestures — armed off the hscroll pulse
+    # stream, gated on supports_tilt_gestures (mirror of the event-tap flag).
+    "gesture_tilt_left_left",
+    "gesture_tilt_left_right",
+    "gesture_tilt_left_up",
+    "gesture_tilt_left_down",
+    "gesture_tilt_right_left",
+    "gesture_tilt_right_right",
+    "gesture_tilt_right_up",
+    "gesture_tilt_right_down",
 )
 
 # G502 family (G-series gaming mice). These run onboard profiles and do not
@@ -224,6 +234,8 @@ LOGI_DEVICE_SPECS = (
         # No hardware gesture button — gestures are event-tap-driven per
         # button (back/forward/middle), not the HID++ RawXY path.
         "supports_event_tap_gestures": True,
+        # Horizontal-scroll tilt slide gestures (tilt_left/tilt_right owners).
+        "supports_tilt_gestures": True,
     },
     # -- M650 Signature family ------------------------------------------------
     # Compact wireless mouse (middle, back, forward buttons). Connects via Logi

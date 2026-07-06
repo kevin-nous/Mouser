@@ -355,5 +355,110 @@ class EventTapGestureStateTransitionTests(unittest.TestCase):
                 self.assertEqual(self.quartz.posted_events, [])  # no native replay
 
 
+_TILT_RIGHT_PULSE = 1 * 65536  # fixed-point h_delta = +1.0 -> tilt_right
+_TILT_LEFT_PULSE = -1 * 65536  # fixed-point h_delta = -1.0 -> tilt_left
+
+
+class TiltGestureStateTransitionTests(unittest.TestCase):
+    """Tilt (hscroll) gesture: armed off the hscroll pulse stream instead of
+    a button down/up, resolved by the same decide_gesture on release. Drives
+    the real macOS callback (_maybe_arm_tilt_gesture / _finish_tilt_gesture)
+    via the fake-Quartz harness above."""
+
+    def setUp(self):
+        MouseHook, quartz = _load_mouse_hook_macos()
+        self.quartz = quartz
+        self.hook = MouseHook()
+        self.hook.configure_gestures(
+            enabled=True, threshold=50, deadzone=40,
+            timeout_ms=3000, cooldown_ms=500, owners=set(),
+            hold_floor_ms=80,
+            tilt_owners={"tilt_left", "tilt_right"}, tilt_release_ms=150,
+        )
+
+    def _scroll(self, h_fixed):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis2] = h_fixed
+        return self.hook._event_tap_callback(
+            None, self.quartz.kCGEventScrollWheel, ev, None
+        )
+
+    def _move(self, dx, dy):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventDeltaX] = dx
+        ev.fields[self.quartz.kCGMouseEventDeltaY] = dy
+        return self.hook._event_tap_callback(
+            None, self.quartz.kCGEventMouseMoved, ev, None
+        )
+
+    def _fire_tilt_release(self):
+        """Cancel the live threading.Timer and drive the real timeout handler
+        as if release_ms had already elapsed -- avoids a real sleep."""
+        timer = self.hook._tilt_release_timer
+        if timer is not None:
+            timer.cancel()
+        self.hook._tilt_last_pulse_at = time.monotonic() - (
+            self.hook._tilt_release_ms / 1000.0 + 0.05
+        )
+        self.hook._on_tilt_release_timeout()
+
+    def test_single_pulse_then_silence_is_a_tap_fires_hscroll(self):
+        result = self._scroll(_TILT_RIGHT_PULSE)
+
+        self.assertIsNone(result)  # swallowed -- gesture armed
+        self.assertTrue(self.hook._gesture_active)
+        self.assertEqual(self.hook._gesture_owner, "tilt_right")
+
+        self._fire_tilt_release()
+
+        self.assertFalse(self.hook._gesture_active)
+        self.assertIsNone(self.hook._gesture_owner)
+        fired = self.hook._dispatch_queue.get_nowait()
+        self.assertEqual(fired.event_type, MouseEvent.HSCROLL_RIGHT)
+        self.assertEqual(fired.raw_data, 1.0)
+        self.assertTrue(self.hook._dispatch_queue.empty())
+
+    def test_pulse_stream_plus_slide_up_fires_tagged_gesture(self):
+        self._scroll(_TILT_LEFT_PULSE)  # first pulse arms tilt_left
+        self.hook._gesture_press_at = time.monotonic() - 0.2  # outlive hold floor
+        self._scroll(_TILT_LEFT_PULSE)  # a second pulse -- still streaming
+
+        result = self._move(0, -120)  # accumulated slide up
+        self.assertIsNone(result)  # swallowed while gesture active
+
+        # Fire-on-slide-cross: the gesture fires the INSTANT the slide crosses
+        # the threshold (mid-hold), NOT on release -- so it's already queued and
+        # _gesture_triggered is set before the release timer runs. This is what
+        # keeps a fragmenting pulse stream from dropping the gesture.
+        self.assertTrue(self.hook._gesture_triggered)
+        fired = self.hook._dispatch_queue.get_nowait()
+        self.assertEqual(fired.event_type, MouseEvent.GESTURE_SWIPE_UP)
+        self.assertEqual(fired.raw_data["source"], "tilt")
+        self.assertEqual(fired.raw_data["gesture_owner"], "tilt_left")
+
+        self._fire_tilt_release()  # resolves release: gesture already fired -> no tap
+        self.assertFalse(self.hook._gesture_active)
+        self.assertTrue(self.hook._dispatch_queue.empty())
+
+    def test_disabled_tilt_direction_does_not_arm(self):
+        self.hook.configure_gestures(
+            enabled=True, threshold=50, deadzone=40,
+            timeout_ms=3000, cooldown_ms=500, owners=set(),
+            hold_floor_ms=80,
+            tilt_owners={"tilt_right"}, tilt_release_ms=150,  # tilt_left NOT enabled
+        )
+
+        result = self._scroll(_TILT_LEFT_PULSE)
+
+        self.assertIsNotNone(result)  # passed through, not swallowed
+        self.assertFalse(self.hook._gesture_active)
+        self.assertIsNone(self.hook._gesture_owner)
+        # falls through to the tilt's normal (non-gesture) hscroll action
+        fired = self.hook._dispatch_queue.get_nowait()
+        self.assertEqual(fired.event_type, MouseEvent.HSCROLL_LEFT)
+        self.assertEqual(fired.raw_data, 1.0)
+        self.assertTrue(self.hook._dispatch_queue.empty())
+
+
 if __name__ == "__main__":
     unittest.main()

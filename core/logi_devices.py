@@ -84,6 +84,13 @@ _PER_BUTTON_GESTURE_DIRECTION_KEYS = tuple(
     for owner in ("back", "forward", "middle")
     for direction in ("left", "right", "up", "down")
 )
+# Tilt slide-gesture keys (hscroll pulse stream, tilt_left/tilt_right owners).
+# Gated on supports_tilt_gestures, a sibling of supports_event_tap_gestures.
+_TILT_GESTURE_DIRECTION_KEYS = tuple(
+    f"gesture_{owner}_{direction}"
+    for owner in ("tilt_left", "tilt_right")
+    for direction in ("left", "right", "up", "down")
+)
 _CID_GATED_BUTTONS = {
     "mode_shift": 0x00C4,
     "dpi_switch": 0x00FD,
@@ -129,6 +136,7 @@ class LogiDeviceSpec:
     dpi_min: int = DEFAULT_DPI_MIN
     dpi_max: int = DEFAULT_DPI_MAX
     supports_event_tap_gestures: bool = False
+    supports_tilt_gestures: bool = False
 
     def matches(self, product_id=None, product_name=None) -> bool:
         if product_id is not None and int(product_id) in self.product_ids:
@@ -297,6 +305,7 @@ class DeviceCapabilityInventory:
     gesture_click: bool = False
     gesture_directions: bool = False
     supports_event_tap_gestures: bool = False
+    supports_tilt_gestures: bool = False
     mode_shift: bool = False
     dpi_switch: bool = False
     hscroll_cids: tuple[int, ...] = ()
@@ -319,6 +328,9 @@ class DeviceCapabilityInventory:
 
         if not self.supports_event_tap_gestures:
             allowed.difference_update(_PER_BUTTON_GESTURE_DIRECTION_KEYS)
+
+        if not self.supports_tilt_gestures:
+            allowed.difference_update(_TILT_GESTURE_DIRECTION_KEYS)
 
         if not self.mode_shift:
             allowed.discard("mode_shift")
@@ -353,6 +365,7 @@ class DeviceCapabilityInventory:
             "gesture_click": self.gesture_click,
             "gesture_directions": self.gesture_directions,
             "supports_event_tap_gestures": self.supports_event_tap_gestures,
+            "supports_tilt_gestures": self.supports_tilt_gestures,
             "mode_shift": self.mode_shift,
             "dpi_switch": self.dpi_switch,
             "hscroll": bool(self.hscroll_cids),
@@ -687,6 +700,7 @@ def build_device_capability_inventory(
     discovered_features=None,
     diagnostics=None,
     supports_event_tap_gestures=False,
+    supports_tilt_gestures=False,
 ) -> DeviceCapabilityInventory:
     controls_by_cid = _control_by_cid(controls or ())
     feature_entries = _feature_entries(discovered_features)
@@ -735,6 +749,7 @@ def build_device_capability_inventory(
         gesture_click=gesture_click,
         gesture_directions=gesture_directions,
         supports_event_tap_gestures=bool(supports_event_tap_gestures),
+        supports_tilt_gestures=bool(supports_tilt_gestures),
         mode_shift=bool(
             mode_shift_control and _control_is_divertable(mode_shift_control)
         ),
@@ -762,6 +777,7 @@ def derive_supported_buttons_from_reprog_controls(
     active_gesture_cid=None,
     gesture_rawxy_enabled=None,
     supports_event_tap_gestures=False,
+    supports_tilt_gestures=False,
 ) -> tuple[str, ...]:
     """Narrow HID++-gated buttons using discovered REPROG_V4 controls.
 
@@ -774,6 +790,7 @@ def derive_supported_buttons_from_reprog_controls(
         active_gesture_cid=active_gesture_cid,
         gesture_rawxy_enabled=gesture_rawxy_enabled,
         supports_event_tap_gestures=supports_event_tap_gestures,
+        supports_tilt_gestures=supports_tilt_gestures,
     )
     return inventory.supported_buttons(static_buttons)
 
@@ -830,6 +847,7 @@ def build_connected_device_info(
         discovered_features=discovered_features,
         diagnostics=diagnostics,
         supports_event_tap_gestures=getattr(spec, "supports_event_tap_gestures", False),
+        supports_tilt_gestures=getattr(spec, "supports_tilt_gestures", False),
     )
     if spec:
         resolved_gesture_cids = tuple(gesture_cids or spec.gesture_cids)

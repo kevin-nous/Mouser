@@ -20,8 +20,8 @@ from core.accessibility import is_process_trusted
 from core.config import (
     BUTTON_NAMES, load_config, save_config, get_active_mappings,
     PROFILE_BUTTON_NAMES, set_mapping, create_profile, delete_profile,
-    get_icon_for_exe, GESTURE_OWNERS, GESTURE_DIRECTIONS,
-    GESTURE_HOLD_FLOOR_MS_DEFAULT,
+    get_icon_for_exe, BUTTON_GESTURE_OWNERS, TILT_GESTURE_OWNERS, GESTURE_DIRECTIONS,
+    GESTURE_HOLD_FLOOR_MS_DEFAULT, TILT_GESTURE_RELEASE_MS_DEFAULT,
 )
 from core import app_catalog
 from core.device_layouts import get_device_layout, get_manual_layout_choices
@@ -550,7 +550,7 @@ class Backend(QObject):
         gesture on -- mirrors the capability narrowing in core/logi_devices.py."""
         btns = self._effective_supported_buttons
         return [
-            owner for owner in GESTURE_OWNERS
+            owner for owner in BUTTON_GESTURE_OWNERS
             if btns is None or f"gesture_{owner}_left" in btns
         ]
 
@@ -559,7 +559,34 @@ class Backend(QObject):
         """Owners with gesture mode toggled on. Persisted independently of the 4
         direction bindings, so turning gesture mode off never drops them."""
         flags = self._cfg.get("settings", {}).get("gesture_owner_enabled", {})
-        return [owner for owner in GESTURE_OWNERS if flags.get(owner, False)]
+        return [owner for owner in BUTTON_GESTURE_OWNERS if flags.get(owner, False)]
+
+    @Property(list, notify=deviceLayoutChanged)
+    def tiltGestureEligibleOwners(self):
+        """Tilt owners (tilt_left/tilt_right) the connected device can host a
+        tilt slide gesture on -- mirrors gestureEligibleOwners for the hscroll
+        pulse stream instead of a per-button event tap."""
+        btns = self._effective_supported_buttons
+        return [
+            owner for owner in TILT_GESTURE_OWNERS
+            if btns is None or f"gesture_{owner}_left" in btns
+        ]
+
+    @Property(list, notify=settingsChanged)
+    def tiltGestureEnabledOwners(self):
+        """Tilt owners with gesture mode toggled on. Shares gesture_owner_enabled
+        storage with the per-button owners (disjoint key space) -- turning it off
+        never drops the 4 direction bindings, and leaves the hscroll tap untouched."""
+        flags = self._cfg.get("settings", {}).get("gesture_owner_enabled", {})
+        return [owner for owner in TILT_GESTURE_OWNERS if flags.get(owner, False)]
+
+    @Property(int, notify=settingsChanged)
+    def tiltGestureReleaseMs(self):
+        """Max gap (ms) between hscroll pulses before a tilt gesture is treated
+        as released -- the tilt-path sibling of gestureHoldFloorMs."""
+        return int(self._cfg.get("settings", {}).get(
+            "tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT
+        ))
 
     @Property(str, notify=settingsChanged)
     def appearanceMode(self):
@@ -1440,7 +1467,7 @@ class Backend(QObject):
         """Toggle gesture mode for a button. Independent of the 4 direction
         bindings -- turning it off leaves them in config untouched, and leaves
         the button's normal single-action mapping untouched too."""
-        if owner not in GESTURE_OWNERS:
+        if owner not in BUTTON_GESTURE_OWNERS:
             return
         flags = self._cfg.setdefault("settings", {}).setdefault("gesture_owner_enabled", {})
         enabled = bool(enabled)
@@ -1455,7 +1482,7 @@ class Backend(QObject):
     @Slot(str, str, result=list)
     def gestureOwnerBindings(self, profileName, owner):
         """Return the 4 direction bindings (gesture_<owner>_<dir>) for a profile."""
-        if owner not in GESTURE_OWNERS:
+        if owner not in BUTTON_GESTURE_OWNERS:
             return []
         profiles = self._cfg.get("profiles", {})
         mappings = profiles.get(profileName, {}).get("mappings", {})
@@ -1472,9 +1499,61 @@ class Backend(QObject):
     @Slot(str, str, str, str)
     def setGestureOwnerBinding(self, profileName, owner, direction, actionId):
         """Set one direction's action for a per-button gesture owner."""
-        if owner not in GESTURE_OWNERS or direction not in GESTURE_DIRECTIONS:
+        if owner not in BUTTON_GESTURE_OWNERS or direction not in GESTURE_DIRECTIONS:
             return
         self.setProfileMapping(profileName, f"gesture_{owner}_{direction}", actionId)
+
+    @Slot(str, bool)
+    def setTiltGestureOwnerEnabled(self, owner, enabled):
+        """Toggle tilt gesture mode for tilt_left/tilt_right. Independent of the
+        4 direction bindings and of the hscroll_left/hscroll_right tap mapping."""
+        if owner not in TILT_GESTURE_OWNERS:
+            return
+        flags = self._cfg.setdefault("settings", {}).setdefault("gesture_owner_enabled", {})
+        enabled = bool(enabled)
+        if flags.get(owner, False) == enabled:
+            return
+        flags[owner] = enabled
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.reload_mappings()
+        self.settingsChanged.emit()
+
+    @Slot(str, str, result=list)
+    def tiltGestureOwnerBindings(self, profileName, owner):
+        """Return the 4 direction bindings (gesture_<owner>_<dir>) for a tilt owner."""
+        if owner not in TILT_GESTURE_OWNERS:
+            return []
+        profiles = self._cfg.get("profiles", {})
+        mappings = profiles.get(profileName, {}).get("mappings", {})
+        result = []
+        for direction in GESTURE_DIRECTIONS:
+            aid = mappings.get(f"gesture_{owner}_{direction}", "none")
+            result.append({
+                "direction": direction,
+                "actionId": aid,
+                "actionLabel": _action_label(aid),
+            })
+        return result
+
+    @Slot(str, str, str, str)
+    def setTiltGestureOwnerBinding(self, profileName, owner, direction, actionId):
+        """Set one direction's action for a tilt gesture owner."""
+        if owner not in TILT_GESTURE_OWNERS or direction not in GESTURE_DIRECTIONS:
+            return
+        self.setProfileMapping(profileName, f"gesture_{owner}_{direction}", actionId)
+
+    @Slot(int)
+    def setTiltGestureReleaseMs(self, value):
+        """Clamp mirrors core.config._migrate's floor (>=50ms)."""
+        clamped = max(50, int(value))
+        if clamped == self.tiltGestureReleaseMs:
+            return
+        self._cfg.setdefault("settings", {})["tilt_gesture_release_ms"] = clamped
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.reload_mappings()
+        self.settingsChanged.emit()
 
     @Slot(str)
     def setAppearanceMode(self, mode):

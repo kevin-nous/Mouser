@@ -1413,6 +1413,195 @@ class BackendPerButtonGestureTests(unittest.TestCase):
 
 
 @unittest.skipIf(Backend is None, "PySide6 not installed in test environment")
+class BackendTiltGestureTests(unittest.TestCase):
+    """Tilt (horizontal-scroll) slide gesture toggle + namespaced binding get/set
+    -- mirrors BackendPerButtonGestureTests, but for the tilt_left/tilt_right
+    owners hosted on the hscroll pulse stream instead of a per-button event tap."""
+
+    def _make_backend(self, engine=None, cfg=None):
+        loaded_config = copy.deepcopy(cfg or DEFAULT_CONFIG)
+        with (
+            patch("ui.backend.load_config", return_value=loaded_config),
+            patch("ui.backend.save_config"),
+            patch("ui.backend.supports_login_startup", return_value=False),
+        ):
+            return Backend(engine=engine)
+
+    def _mx_anywhere_2s_tilt(self):
+        return SimpleNamespace(
+            key="mx_anywhere_2s",
+            display_name="MX Anywhere 2S",
+            dpi_min=200,
+            dpi_max=4000,
+            ui_layout="mx_anywhere_2s",
+            supported_buttons=(
+                "middle", "xbutton1", "xbutton2", "hscroll_left", "hscroll_right",
+                "gesture_tilt_left_left", "gesture_tilt_left_right",
+                "gesture_tilt_left_up", "gesture_tilt_left_down",
+            ),
+        )
+
+    def test_tilt_gesture_mode_off_by_default(self):
+        backend = self._make_backend()
+        self.assertEqual(backend.tiltGestureEnabledOwners, [])
+        bindings = backend.tiltGestureOwnerBindings("default", "tilt_left")
+        self.assertTrue(all(entry["actionId"] == "none" for entry in bindings))
+
+    def test_set_tilt_gesture_owner_enabled_persists_and_notifies(self):
+        backend = self._make_backend()
+        settings_changed = []
+        backend.settingsChanged.connect(lambda: settings_changed.append(True))
+
+        with patch("ui.backend.save_config") as save_mock:
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+
+        save_mock.assert_called_once()
+        self.assertEqual(backend.tiltGestureEnabledOwners, ["tilt_left"])
+        self.assertEqual(len(settings_changed), 1)
+
+    def test_set_tilt_gesture_owner_enabled_noop_when_unchanged(self):
+        backend = self._make_backend()
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+
+        with patch("ui.backend.save_config") as save_mock:
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+
+        save_mock.assert_not_called()
+
+    def test_set_tilt_gesture_owner_enabled_rejects_unknown_owner(self):
+        backend = self._make_backend()
+        with patch("ui.backend.save_config") as save_mock:
+            # "back" is a per-button owner, not a tilt owner.
+            backend.setTiltGestureOwnerEnabled("back", True)
+        save_mock.assert_not_called()
+        self.assertEqual(backend.tiltGestureEnabledOwners, [])
+
+    def test_set_tilt_gesture_owner_enabled_reruns_engine_mapping_reload(self):
+        engine = _FakeEngine()
+        backend = self._make_backend(engine=engine)
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_right", True)
+        self.assertEqual(engine.reload_mappings_count, 1)
+
+    def test_tilt_and_button_owner_enabled_flags_are_independent(self):
+        """tilt_left/tilt_right share the gesture_owner_enabled dict with
+        back/forward/middle (disjoint keys) -- toggling one must not leak
+        into the other's enabled-owner list."""
+        backend = self._make_backend()
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+            backend.setGestureOwnerEnabled("forward", True)
+
+        self.assertEqual(backend.tiltGestureEnabledOwners, ["tilt_left"])
+        self.assertEqual(backend.gestureEnabledOwners, ["forward"])
+
+    def test_toggle_off_does_not_clear_tilt_direction_bindings(self):
+        backend = self._make_backend()
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+        with patch("core.config.save_config"):
+            backend.setTiltGestureOwnerBinding("default", "tilt_left", "up", "mission_control")
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", False)
+
+        self.assertEqual(backend.tiltGestureEnabledOwners, [])
+        bindings = {
+            entry["direction"]: entry["actionId"]
+            for entry in backend.tiltGestureOwnerBindings("default", "tilt_left")
+        }
+        self.assertEqual(bindings["up"], "mission_control")
+
+    def test_toggle_off_does_not_touch_hscroll_tap_mapping(self):
+        backend = self._make_backend()
+
+        def hscroll_left_action():
+            mappings = backend.getProfileMappings("default")
+            return next(m["actionId"] for m in mappings if m["key"] == "hscroll_left")
+
+        original = hscroll_left_action()
+        self.assertEqual(original, "browser_back")  # DEFAULT_CONFIG value, sanity check
+
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", True)
+        with patch("core.config.save_config"):
+            backend.setTiltGestureOwnerBinding("default", "tilt_left", "left", "mission_control")
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureOwnerEnabled("tilt_left", False)
+
+        self.assertEqual(hscroll_left_action(), original)
+
+    def test_set_and_get_tilt_gesture_owner_binding_round_trip(self):
+        backend = self._make_backend()
+        with patch("core.config.save_config"):
+            backend.setTiltGestureOwnerBinding("default", "tilt_right", "up", "mission_control")
+
+        bindings = {
+            entry["direction"]: entry["actionId"]
+            for entry in backend.tiltGestureOwnerBindings("default", "tilt_right")
+        }
+        self.assertEqual(bindings["up"], "mission_control")
+        self.assertEqual(bindings["left"], "none")
+        self.assertEqual(bindings["right"], "none")
+        self.assertEqual(bindings["down"], "none")
+
+    def test_set_tilt_gesture_owner_binding_rejects_unknown_owner_or_direction(self):
+        backend = self._make_backend()
+        with patch("core.config.save_config") as save_mock:
+            backend.setTiltGestureOwnerBinding("default", "trigger", "up", "mission_control")
+            backend.setTiltGestureOwnerBinding("default", "tilt_left", "diagonal", "mission_control")
+        save_mock.assert_not_called()
+
+    def test_tilt_gesture_owner_bindings_unknown_owner_returns_empty(self):
+        backend = self._make_backend()
+        self.assertEqual(backend.tiltGestureOwnerBindings("default", "trigger"), [])
+
+    def test_tilt_gesture_release_ms_default(self):
+        backend = self._make_backend()
+        self.assertEqual(backend.tiltGestureReleaseMs, 150)
+
+    def test_set_tilt_gesture_release_ms_clamps_and_persists(self):
+        backend = self._make_backend()
+        with patch("ui.backend.save_config") as save_mock:
+            backend.setTiltGestureReleaseMs(10)
+        save_mock.assert_called_once()
+        self.assertEqual(backend.tiltGestureReleaseMs, 50)
+
+    def test_set_tilt_gesture_release_ms_noop_when_unchanged(self):
+        backend = self._make_backend()
+        with patch("ui.backend.save_config"):
+            backend.setTiltGestureReleaseMs(200)
+
+        with patch("ui.backend.save_config") as save_mock:
+            backend.setTiltGestureReleaseMs(200)
+        save_mock.assert_not_called()
+
+    def test_tilt_gesture_eligible_owners_defaults_permissive_without_device(self):
+        backend = self._make_backend()
+        self.assertEqual(set(backend.tiltGestureEligibleOwners), {"tilt_left", "tilt_right"})
+
+    def test_tilt_gesture_eligible_owners_narrowed_by_device_capability(self):
+        backend = self._make_backend(
+            engine=_FakeEngine(device_connected=True, connected_device=self._mx_anywhere_2s_tilt())
+        )
+        self.assertEqual(backend.tiltGestureEligibleOwners, ["tilt_left"])
+
+    def test_tilt_gesture_eligible_owners_empty_when_device_lacks_capability(self):
+        device = SimpleNamespace(
+            key="mx_master_3s",
+            display_name="MX Master 3S",
+            dpi_min=200,
+            dpi_max=8000,
+            ui_layout="mx_master_3s",
+            supported_buttons=("middle", "xbutton1", "xbutton2", "hscroll_left", "hscroll_right"),
+        )
+        backend = self._make_backend(
+            engine=_FakeEngine(device_connected=True, connected_device=device)
+        )
+        self.assertEqual(backend.tiltGestureEligibleOwners, [])
+
+
+@unittest.skipIf(Backend is None, "PySide6 not installed in test environment")
 class BackendLoginStartupTests(unittest.TestCase):
     def test_init_calls_sync_from_config_when_supported(self):
         cfg = copy.deepcopy(DEFAULT_CONFIG)

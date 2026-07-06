@@ -590,6 +590,23 @@ def _connected_mouse_hook_cls(device):
     return _ConnectedFakeMouseHook
 
 
+def _fully_eligible_device_with_button_and_tilt():
+    """Device eligible for BOTH button owners and tilt owners -- mirrors the
+    real mx_anywhere_2s spec (supports_event_tap_gestures AND
+    supports_tilt_gestures both True). Used to regression-test that the two
+    owner kinds route into separate configure_gestures() params, never mixed."""
+    return SimpleNamespace(
+        supported_buttons=(
+            *_fully_eligible_device().supported_buttons,
+            *(
+                f"gesture_{owner}_{direction}"
+                for owner in ("tilt_left", "tilt_right")
+                for direction in _ALL_GESTURE_DIRECTIONS
+            ),
+        )
+    )
+
+
 class EngineGestureDispatchTests(unittest.TestCase):
     """Issue 004: configure_gestures wiring + per-owner direction dispatch.
 
@@ -912,6 +929,160 @@ class EngineGestureRearmOnConnectTests(unittest.TestCase):
                 ))
 
         execute_action_mock.assert_called_once_with("mission_control")
+
+
+class EngineTiltGestureTests(unittest.TestCase):
+    """Tilt (horizontal-scroll) slide gestures: the engine feeds
+    _active_tilt_owners to configure_gestures(tilt_owners=, tilt_release_ms=),
+    gated the same way as button owners (bound direction + settings.
+    gesture_owner_enabled + device eligibility, here on supports_tilt_gestures
+    rather than supports_event_tap_gestures), and routes a gesture_swipe_<dir>
+    event tagged gesture_owner="tilt_left"/"tilt_right" through the same
+    owner_bindings dict as button owners. A tilt TAP arrives as a plain
+    HSCROLL_LEFT/RIGHT event, already covered by EngineHorizontalScrollTests."""
+
+    _TILT_ONLY_DEVICE = SimpleNamespace(
+        supported_buttons=(
+            "middle", "xbutton1", "xbutton2",
+            "hscroll_left", "hscroll_right",
+            "gesture_tilt_left_left", "gesture_tilt_left_right",
+            "gesture_tilt_left_up", "gesture_tilt_left_down",
+            "gesture_tilt_right_left", "gesture_tilt_right_right",
+            "gesture_tilt_right_up", "gesture_tilt_right_down",
+        )
+    )
+    # Per-button-event-tap eligible, but NOT tilt-eligible (no
+    # supports_tilt_gestures) -- e.g. config carried over from an MX Anywhere 2S.
+    _NO_TILT_DEVICE = SimpleNamespace(
+        supported_buttons=(
+            "middle", "xbutton1", "xbutton2",
+            "gesture_forward_left", "gesture_forward_right",
+            "gesture_forward_up", "gesture_forward_down",
+        )
+    )
+
+    def _cfg(self, enabled=None, **mapping_overrides):
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
+        cfg["profiles"]["default"]["mappings"].update(mapping_overrides)
+        if enabled is not None:
+            cfg["settings"]["gesture_owner_enabled"] = dict(enabled)
+        return cfg
+
+    def _make_engine(self, cfg, device=None):
+        from core.engine import Engine
+
+        hook_cls = _connected_mouse_hook_cls(device) if device is not None else _FakeMouseHook
+        with (
+            patch("core.engine.MouseHook", hook_cls),
+            patch("core.engine.AppDetector", _FakeAppDetector),
+            patch("core.engine.load_config", return_value=cfg),
+        ):
+            return Engine()
+
+    def test_bound_enabled_and_eligible_tilt_owner_arms(self):
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+
+        gesture_cfg = engine.hook._gesture_config
+        self.assertEqual(gesture_cfg["tilt_owners"], {"tilt_left"})
+        self.assertEqual(gesture_cfg["owners"], set())
+        self.assertIs(gesture_cfg["enabled"], True)
+        self.assertIn("gesture_swipe_up", engine.hook.registered)
+
+    def test_tilt_owner_stays_off_when_enable_toggle_is_off(self):
+        cfg = self._cfg(enabled={"tilt_left": False}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+
+        self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
+        self.assertNotIn("gesture_swipe_up", engine.hook.registered)
+
+    def test_tilt_owner_stays_off_when_enable_flag_absent(self):
+        # No settings.gesture_owner_enabled key at all -- default is off.
+        cfg = self._cfg(gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+
+        self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
+
+    def test_tilt_owner_stays_off_with_no_device_connected(self):
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=None)
+
+        self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
+
+    def test_tilt_owner_does_not_leak_onto_non_tilt_eligible_device(self):
+        # Regression: a device with per-button event-tap support but no
+        # supports_tilt_gestures must not arm a tilt owner even if bound+enabled.
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._NO_TILT_DEVICE)
+
+        self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
+        self.assertNotIn("gesture_swipe_up", engine.hook.registered)
+
+    def test_tilt_release_ms_threads_through_to_configure_gestures(self):
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        cfg["settings"]["tilt_gesture_release_ms"] = 250
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+
+        self.assertEqual(engine.hook._gesture_config["tilt_release_ms"], 250)
+
+    def test_tilt_release_ms_defaults_when_unset(self):
+        from core.config import TILT_GESTURE_RELEASE_MS_DEFAULT
+
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+
+        self.assertEqual(
+            engine.hook._gesture_config["tilt_release_ms"], TILT_GESTURE_RELEASE_MS_DEFAULT
+        )
+
+    def test_button_and_tilt_owners_do_not_cross_leak(self):
+        """Regression: gesture_owners() returns the button+tilt union, so a
+        device eligible for BOTH kinds with one owner of each bound+enabled
+        must route each into its OWN configure_gestures() param, never mixed
+        into the other's set."""
+        cfg = self._cfg(
+            enabled={"forward": True, "tilt_left": True},
+            gesture_forward_up="mission_control",
+            gesture_tilt_left_down="app_expose",
+        )
+        engine = self._make_engine(cfg, device=_fully_eligible_device_with_button_and_tilt())
+
+        gesture_cfg = engine.hook._gesture_config
+        self.assertEqual(gesture_cfg["owners"], {"forward"})
+        self.assertEqual(gesture_cfg["tilt_owners"], {"tilt_left"})
+
+    def test_tilt_swipe_tagged_event_routes_to_bound_action(self):
+        """The tilt kernel fires gesture_swipe_<dir> tagged
+        gesture_owner="tilt_left"/"tilt_right" on a slide -- routed by the
+        same _make_owner_gesture_handler as button owners, keyed on
+        gesture_tilt_left_up's bound action."""
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+        handlers = engine.hook.registered["gesture_swipe_up"]
+
+        with patch("core.engine.execute_action") as execute_action_mock:
+            for handler in handlers:
+                handler(SimpleNamespace(
+                    event_type=MouseEvent.GESTURE_SWIPE_UP,
+                    raw_data={"delta_x": 80, "delta_y": 0, "source": "tilt", "gesture_owner": "tilt_left"},
+                ))
+
+        execute_action_mock.assert_called_once_with("mission_control")
+
+    def test_tilt_owner_without_binding_for_direction_does_not_fire(self):
+        # tilt_left only binds "up" -- a "down" swipe tagged tilt_left has no action.
+        cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
+        engine = self._make_engine(cfg, device=self._TILT_ONLY_DEVICE)
+        handlers = engine.hook.registered["gesture_swipe_down"]
+
+        with patch("core.engine.execute_action") as execute_action_mock:
+            for handler in handlers:
+                handler(SimpleNamespace(
+                    event_type=MouseEvent.GESTURE_SWIPE_DOWN,
+                    raw_data={"delta_x": 0, "delta_y": 80, "source": "tilt", "gesture_owner": "tilt_left"},
+                ))
+
+        execute_action_mock.assert_not_called()
 
 
 if __name__ == "__main__":

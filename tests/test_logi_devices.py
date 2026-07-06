@@ -377,6 +377,26 @@ class LogiDeviceRegistryTests(unittest.TestCase):
             with self.subTest(device=device.key):
                 self.assertFalse(device.supports_event_tap_gestures)
 
+    def test_mx_anywhere_2s_spec_supports_tilt_gestures(self):
+        device = resolve_device(product_id=0xB01A)
+
+        self.assertIsNotNone(device)
+        self.assertTrue(device.supports_tilt_gestures)
+        for owner in ("tilt_left", "tilt_right"):
+            for direction in ("left", "right", "up", "down"):
+                key = f"gesture_{owner}_{direction}"
+                with self.subTest(key=key):
+                    self.assertIn(key, device.supported_buttons)
+
+    def test_only_2s_supports_tilt_gestures_and_no_tilt_keys_elsewhere(self):
+        # Opt-in like the event-tap flag; MX Master entries untouched.
+        for device in KNOWN_LOGI_DEVICES:
+            if device.key == "mx_anywhere_2s":
+                continue
+            with self.subTest(device=device.key):
+                self.assertFalse(device.supports_tilt_gestures)
+                self.assertNotIn("gesture_tilt_left_left", device.supported_buttons)
+
 
 class RuntimeSupportedButtonTests(unittest.TestCase):
     @staticmethod
@@ -805,6 +825,58 @@ class RuntimeSupportedButtonTests(unittest.TestCase):
             info.capability_inventory.to_dict()["known_unsupported_controls"],
             [{"cid": "0x01A0", "name": "haptic"}],
         )
+
+    # -- Tilt slide gestures (supports_tilt_gestures capability) --------------
+
+    _TILT_STATIC_BUTTONS = (
+        "middle",
+        "xbutton1",
+        "xbutton2",
+        "hscroll_left",
+        "hscroll_right",
+        "gesture_tilt_left_left",
+        "gesture_tilt_left_up",
+        "gesture_tilt_right_right",
+        "gesture_tilt_right_down",
+    )
+
+    def test_tilt_flag_keeps_tilt_keys(self):
+        buttons = derive_supported_buttons_from_reprog_controls(
+            self._TILT_STATIC_BUTTONS,
+            [self._control(0x0052, flags=0x0130), self._control(0x0053, flags=0x0130)],
+            supports_tilt_gestures=True,
+        )
+        self.assertIn("gesture_tilt_left_left", buttons)
+        self.assertIn("gesture_tilt_right_down", buttons)
+        self.assertIn("hscroll_left", buttons)
+
+    def test_no_tilt_flag_strips_tilt_keys(self):
+        buttons = derive_supported_buttons_from_reprog_controls(
+            self._TILT_STATIC_BUTTONS,
+            [self._control(0x0052, flags=0x0130), self._control(0x0053, flags=0x0130)],
+        )
+        self.assertNotIn("gesture_tilt_left_left", buttons)
+        self.assertNotIn("gesture_tilt_right_down", buttons)
+        # OS-level hscroll (the tilt tap target) is unaffected.
+        self.assertIn("hscroll_left", buttons)
+
+    def test_mx_anywhere_2s_exposes_tilt_keys_via_capability_model(self):
+        info = build_connected_device_info(
+            product_id=0xB01A,
+            reprog_controls=[
+                self._control(0x0052, flags=0x0130),
+                self._control(0x0053, flags=0x0130),
+                self._control(0x0056, flags=0x0130),
+            ],
+        )
+
+        self.assertTrue(info.capability_inventory.supports_tilt_gestures)
+        self.assertTrue(info.capability_inventory.to_dict()["supports_tilt_gestures"])
+        for owner in ("tilt_left", "tilt_right"):
+            for direction in ("left", "right", "up", "down"):
+                key = f"gesture_{owner}_{direction}"
+                with self.subTest(key=key):
+                    self.assertIn(key, info.supported_buttons)
 
 
 if __name__ == "__main__":

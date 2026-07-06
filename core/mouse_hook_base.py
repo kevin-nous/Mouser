@@ -97,6 +97,8 @@ class BaseMouseHook:
         self._gesture_input_source = None
         self._gesture_owners = set()
         self._gesture_hold_floor_ms = _GESTURE_HOLD_FLOOR_MS_DEFAULT
+        self._tilt_gesture_owners = set()
+        self._tilt_release_ms = 150
         self._connected_device = None
         self._dispatch_queue = None
 
@@ -148,6 +150,8 @@ class BaseMouseHook:
         cooldown_ms=500,
         owners=None,
         hold_floor_ms=None,
+        tilt_owners=None,
+        tilt_release_ms=None,
     ):
         self._gesture_direction_enabled = bool(enabled)
         self._gesture_threshold = float(max(5, threshold))
@@ -157,6 +161,11 @@ class BaseMouseHook:
         # Per-button event-tap gesture owners are independent of the HID
         # direction feature above; issue 004 supplies both from config.
         self._gesture_owners = set(owners) if owners else set()
+        # Tilt (horizontal-scroll) gesture owners ("tilt_left"/"tilt_right"),
+        # armed off the hscroll pulse stream (macOS hook) rather than a button.
+        self._tilt_gesture_owners = set(tilt_owners) if tilt_owners else set()
+        if tilt_release_ms is not None:
+            self._tilt_release_ms = max(50, int(tilt_release_ms))
         if hold_floor_ms is not None:
             self._gesture_hold_floor_ms = max(0, int(hold_floor_ms))
         if not self._gesture_direction_enabled:

@@ -46,21 +46,43 @@ GESTURE_DIRECTION_BUTTONS = (
 # independently own a 4-direction gesture, driven by the macOS event tap
 # rather than the HID++ thumb gesture button above. Namespaced keys keep this
 # additive to GESTURE_DIRECTION_BUTTONS, which stays wired to the HID path.
-GESTURE_OWNERS = ("back", "forward", "middle")
+BUTTON_GESTURE_OWNERS = ("back", "forward", "middle")
+# Tilt (horizontal-scroll) slide gestures: the hscroll pulse stream is armed as
+# two gesture owners. Same gesture_<owner>_<dir> shape as the button owners, but
+# the engine feeds these to configure_gestures(tilt_owners=) not owners=.
+TILT_GESTURE_OWNERS = ("tilt_left", "tilt_right")
+# Combined owner list the gesture_owners()/gesture_bindings_for() helpers iterate.
+GESTURE_OWNERS = BUTTON_GESTURE_OWNERS + TILT_GESTURE_OWNERS
 GESTURE_DIRECTIONS = ("left", "right", "up", "down")
 
-_GESTURE_OWNER_LABELS = {"back": "Back", "forward": "Forward", "middle": "Middle"}
+_GESTURE_OWNER_LABELS = {
+    "back": "Back",
+    "forward": "Forward",
+    "middle": "Middle",
+    "tilt_left": "Tilt left",
+    "tilt_right": "Tilt right",
+}
 
 _PER_BUTTON_GESTURE_LABELS = {
     f"gesture_{owner}_{direction}": f"{_GESTURE_OWNER_LABELS[owner]} gesture swipe {direction}"
-    for owner in GESTURE_OWNERS
+    for owner in BUTTON_GESTURE_OWNERS
     for direction in GESTURE_DIRECTIONS
 }
 
-# The 12 namespaced keys, e.g. "gesture_back_left" .. "gesture_middle_down".
+# The 12 namespaced button keys, e.g. "gesture_back_left" .. "gesture_middle_down".
 PER_BUTTON_GESTURE_KEYS = tuple(_PER_BUTTON_GESTURE_LABELS)
 
+_TILT_GESTURE_LABELS = {
+    f"gesture_{owner}_{direction}": f"{_GESTURE_OWNER_LABELS[owner]} gesture swipe {direction}"
+    for owner in TILT_GESTURE_OWNERS
+    for direction in GESTURE_DIRECTIONS
+}
+
+# The 8 namespaced tilt keys, e.g. "gesture_tilt_left_left" .. "gesture_tilt_right_down".
+TILT_GESTURE_KEYS = tuple(_TILT_GESTURE_LABELS)
+
 GESTURE_HOLD_FLOOR_MS_DEFAULT = 80
+TILT_GESTURE_RELEASE_MS_DEFAULT = 150
 
 PROFILE_BUTTON_NAMES = {
     **BUTTON_NAMES,
@@ -69,14 +91,17 @@ PROFILE_BUTTON_NAMES = {
     "gesture_up":    "Gesture swipe up",
     "gesture_down":  "Gesture swipe down",
     **_PER_BUTTON_GESTURE_LABELS,
+    **_TILT_GESTURE_LABELS,
 }
 
 # Maps config button keys to the MouseEvent types they correspond to.
-# NOTE: the 12 namespaced gesture_<owner>_<direction> binding keys deliberately
-# have NO entry here. The event-tap kernel emits the generic gesture_swipe_<dir>
-# event tagged with raw_data["gesture_owner"], and engine._make_owner_gesture_handler
-# routes on that tag -- a namespaced "gesture_<owner>_swipe_<dir>" string is never
-# dispatched. Resolve these bindings via gesture_bindings_for(), not this map.
+# NOTE: the 12 namespaced button gesture_<owner>_<direction> keys AND the 8 tilt
+# gesture_tilt_{left,right}_<direction> keys deliberately have NO entry here. The
+# kernel emits the generic gesture_swipe_<dir> event tagged with
+# raw_data["gesture_owner"], and engine._make_owner_gesture_handler routes on that
+# tag -- a namespaced string is never dispatched. (A tilt TAP instead reuses the
+# existing hscroll_left/hscroll_right mapping below.) Resolve these bindings via
+# gesture_bindings_for(), not this map.
 BUTTON_TO_EVENTS = {
     "middle":        ("middle_down", "middle_up"),
     "gesture":       ("gesture_click",),
@@ -107,6 +132,7 @@ DEFAULT_CONFIG = {
                 "gesture_up": "none",
                 "gesture_down": "none",
                 **{key: "none" for key in PER_BUTTON_GESTURE_KEYS},
+                **{key: "none" for key in TILT_GESTURE_KEYS},
                 "xbutton1": "alt_tab",
                 "xbutton2": "alt_tab",
                 "hscroll_left": "browser_back",
@@ -130,6 +156,7 @@ DEFAULT_CONFIG = {
         "gesture_timeout_ms": 3000,
         "gesture_cooldown_ms": 500,
         "gesture_hold_floor_ms": GESTURE_HOLD_FLOOR_MS_DEFAULT,
+        "tilt_gesture_release_ms": TILT_GESTURE_RELEASE_MS_DEFAULT,
         "appearance_mode": "system",
         "debug_mode": False,
         "device_layout_overrides": {},
@@ -393,6 +420,10 @@ def _migrate(cfg):
     cfg["settings"]["gesture_hold_floor_ms"] = max(
         0, int(cfg["settings"].get("gesture_hold_floor_ms", GESTURE_HOLD_FLOOR_MS_DEFAULT))
     )
+    cfg["settings"].setdefault("tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT)
+    cfg["settings"]["tilt_gesture_release_ms"] = max(
+        50, int(cfg["settings"].get("tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT))
+    )
 
     # Always migrate old wmplayer.exe → Microsoft.Media.Player.exe in profile apps
     for pdata in cfg.get("profiles", {}).values():
@@ -401,11 +432,13 @@ def _migrate(cfg):
             if a.lower() == "wmplayer.exe":
                 apps[i] = "Microsoft.Media.Player.exe"
 
-    # Always ensure the 12 namespaced per-button gesture keys exist ("none" =
-    # off) so pre-existing configs surface no owners without erroring.
+    # Always ensure the 12 per-button + 8 tilt namespaced gesture keys exist
+    # ("none" = off) so pre-existing configs surface no owners without erroring.
     for pdata in cfg.get("profiles", {}).values():
         mappings = pdata.setdefault("mappings", {})
         for key in PER_BUTTON_GESTURE_KEYS:
+            mappings.setdefault(key, "none")
+        for key in TILT_GESTURE_KEYS:
             mappings.setdefault(key, "none")
 
     return cfg
