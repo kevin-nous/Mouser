@@ -445,6 +445,70 @@ class HScrollHoldModifierTests(unittest.TestCase):
         self.assertEqual(len(self.quartz.posted_events), 1)  # claims AND scrolls
 
 
+class HScrollDirectionSpeedTests(unittest.TestCase):
+    """Issue 011 — speed factor scales magnitude and the invert toggle reverses
+    direction. Absolute 'up->left' sign is hardware-calibrated (issue 013), so
+    these assert *relative* behaviour only."""
+
+    def setUp(self):
+        MouseHook, quartz = _load_mouse_hook_macos()
+        quartz.scroll_calls = []
+
+        def _mk(*a):
+            quartz.scroll_calls.append(a)
+            return _FakeCGEvent()
+
+        quartz.CGEventCreateScrollWheelEvent = _mk
+        self.quartz = quartz
+        self.hook = MouseHook()
+        self.hook.configure_gestures(
+            enabled=True, threshold=50, deadzone=40,
+            timeout_ms=3000, cooldown_ms=500, owners={"back"}, hold_floor_ms=80)
+        self.hook.configure_hscroll_modifier("back")
+
+    def _down(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseDown, ev, None)
+
+    def _up(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseUp, ev, None)
+
+    def _scroll(self, v=0.0):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis1] = int(v * 65536)
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
+
+    def _injected_h(self):
+        # signature (source, units, wheelCount, wheel1_vertical, wheel2_horizontal)
+        return self.quartz.scroll_calls[-1][4]
+
+    def test_default_speed_is_unity(self):
+        self._down(_BACK_BTN)
+        self._scroll(v=4.0)
+        self.assertEqual(abs(self._injected_h()), 4)
+
+    def test_speed_factor_scales_magnitude(self):
+        self.hook.hscroll_modifier_speed = 3.0
+        self._down(_BACK_BTN)
+        self._scroll(v=2.0)
+        self.assertEqual(abs(self._injected_h()), 6)  # |2 * 3|, worked out by hand
+
+    def test_invert_toggle_reverses_direction(self):
+        self._down(_BACK_BTN)
+        self._scroll(v=2.0)
+        off = self._injected_h()
+        self._up(_BACK_BTN)                       # end hold, reset claim
+        self.hook.hscroll_modifier_invert = True
+        self._down(_BACK_BTN)
+        self._scroll(v=2.0)
+        on = self._injected_h()
+        self.assertNotEqual(off, 0)
+        self.assertEqual(on, -off)                # exact reversal
+
+
 _TILT_RIGHT_PULSE = 1 * 65536  # fixed-point h_delta = +1.0 -> tilt_right
 _TILT_LEFT_PULSE = -1 * 65536  # fixed-point h_delta = -1.0 -> tilt_left
 

@@ -171,6 +171,16 @@ class EngineHorizontalScrollTests(unittest.TestCase):
         # must also be armed as an owner, else the hold never enters the kernel
         self.assertIn("back", engine.hook._gesture_config["owners"])
 
+    def test_setup_hooks_applies_hscroll_modifier_speed_and_invert(self):
+        """Issue 011 — the speed factor and dedicated invert toggle flow from
+        settings onto the hook."""
+        engine = self._make_engine()
+        engine.cfg["settings"]["hscroll_modifier_speed"] = 2.5
+        engine.cfg["settings"]["hscroll_modifier_invert"] = True
+        engine._setup_hooks()
+        self.assertEqual(engine.hook.hscroll_modifier_speed, 2.5)
+        self.assertTrue(engine.hook.hscroll_modifier_invert)
+
     def test_setup_hooks_no_hscroll_modifier_when_unbound(self):
         engine = self._make_engine()
         engine.hook.connected_device = SimpleNamespace(

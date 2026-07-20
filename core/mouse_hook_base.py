@@ -76,6 +76,10 @@ class BaseMouseHook:
         self.debug_mode = False
         self.invert_vscroll = False
         self.invert_hscroll = False
+        # Horizontal-scroll hold modifier tuning (issue 011); consumed by the
+        # macOS hook's scroll diversion, set by the engine from settings.
+        self.hscroll_modifier_speed = 1.0
+        self.hscroll_modifier_invert = False
         self._gesture_active = False
         self._hid_gesture = None
         self._device_connected = False

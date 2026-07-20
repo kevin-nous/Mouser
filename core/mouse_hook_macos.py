@@ -53,6 +53,12 @@ _BTN_FORWARD = 4
 _BTN_TO_OWNER = {_BTN_BACK: "back", _BTN_FORWARD: "forward", _BTN_MIDDLE: "middle"}
 _SCROLL_INVERT_MARKER = 0x4D4F5553
 _INJECTED_EVENT_MARKER = 0x4D4F5554
+# Maps vertical wheel delta -> horizontal scroll delta for the hold modifier
+# (issue 011). +1/-1 only; which sign yields the PRD default "wheel up -> content
+# scrolls left" is hardware-calibrated (issue 013 E2E) -- flip this one constant.
+# The user-facing invert toggle negates it, so relative direction is correct
+# regardless of how this is finally calibrated.
+_HSCROLL_DIRECTION_SIGN = 1
 _kCGEventTapDisabledByTimeout = 0xFFFFFFFE
 _kCGEventTapDisabledByUserInput = 0xFFFFFFFF
 
@@ -713,8 +719,12 @@ class MouseHook(BaseMouseHook):
                     ) / 65536.0
                     if v_delta != 0:
                         self._hold_claim = "hscroll"
-                        # #011 layers scale / invert / direction onto this call.
-                        self._inject_hscroll(v_delta)
+                        # Apply speed, default direction, and the dedicated invert
+                        # toggle (issue 011). Reuses _inject_hscroll's scale arg.
+                        scale = self.hscroll_modifier_speed * _HSCROLL_DIRECTION_SIGN
+                        if self.hscroll_modifier_invert:
+                            scale = -scale
+                        self._inject_hscroll(v_delta, scale=scale)
                         return None  # swallow the original vertical scroll
                 if self.debug_mode and self._debug_callback:
                     try:
