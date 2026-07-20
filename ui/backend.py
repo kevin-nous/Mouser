@@ -588,6 +588,52 @@ class Backend(QObject):
             "tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT
         ))
 
+    @Property(bool, notify=deviceLayoutChanged)
+    def hscrollModifierEligible(self):
+        """Whether the horizontal-scroll hold modifier can be offered: macOS only
+        (the event-tap per-button hold is macOS-only) AND the connected device
+        can host an event-tap gesture owner (back/forward/middle). Issue 013."""
+        if sys.platform != "darwin":
+            return False
+        btns = self._effective_supported_buttons
+        if btns is None:
+            return False
+        return any(f"gesture_{owner}_left" in btns for owner in BUTTON_GESTURE_OWNERS)
+
+    @Property(float, notify=settingsChanged)
+    def hscrollModifierSpeed(self):
+        """Scale factor applied to the wheel delta when the hold modifier turns
+        it into horizontal scroll (1.0 = 1:1 with vertical)."""
+        return float(self._cfg.get("settings", {}).get("hscroll_modifier_speed", 1.0))
+
+    @Slot(float)
+    def setHscrollModifierSpeed(self, value):
+        value = float(value)
+        if self.hscrollModifierSpeed == value:
+            return
+        self._cfg.setdefault("settings", {})["hscroll_modifier_speed"] = value
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.reload_mappings()
+        self.settingsChanged.emit()
+
+    @Property(bool, notify=settingsChanged)
+    def hscrollModifierInvert(self):
+        """Dedicated invert toggle for the hold modifier's horizontal direction,
+        independent of invertHScroll (which inverts physical tilt input)."""
+        return bool(self._cfg.get("settings", {}).get("hscroll_modifier_invert", False))
+
+    @Slot(bool)
+    def setHscrollModifierInvert(self, value):
+        value = bool(value)
+        if self.hscrollModifierInvert == value:
+            return
+        self._cfg.setdefault("settings", {})["hscroll_modifier_invert"] = value
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.reload_mappings()
+        self.settingsChanged.emit()
+
     @Property(str, notify=settingsChanged)
     def appearanceMode(self):
         mode = self._cfg.get("settings", {}).get("appearance_mode", "system")

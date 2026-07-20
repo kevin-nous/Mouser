@@ -89,6 +89,60 @@ class _FakeEngine:
 
 
 @unittest.skipIf(Backend is None, "PySide6 not installed in test environment")
+class BackendHScrollModifierTests(unittest.TestCase):
+    """Issue 013 — backend gate + settings for the horizontal-scroll hold modifier."""
+
+    def _make_backend(self, engine=None, cfg=None):
+        loaded_config = copy.deepcopy(cfg or DEFAULT_CONFIG)
+        with (
+            patch("ui.backend.load_config", return_value=loaded_config),
+            patch("ui.backend.save_config"),
+            patch("ui.backend.supports_login_startup", return_value=False),
+        ):
+            return Backend(engine=engine)
+
+    def _owner_device(self):
+        return SimpleNamespace(
+            key="mx_anywhere_2s", display_name="MX Anywhere 2S",
+            dpi_min=200, dpi_max=4000, ui_layout="mx_anywhere_2s",
+            supported_buttons=("middle", "gesture_back_left", "gesture_back_right",
+                               "gesture_back_up", "gesture_back_down"))
+
+    def test_eligible_on_macos_with_event_tap_owner_device(self):
+        backend = self._make_backend(
+            engine=_FakeEngine(device_connected=True, connected_device=self._owner_device()))
+        with patch("ui.backend.sys.platform", "darwin"):
+            self.assertTrue(backend.hscrollModifierEligible)
+
+    def test_not_eligible_when_device_lacks_event_tap_owner(self):
+        device = SimpleNamespace(
+            key="generic", display_name="Generic", dpi_min=200, dpi_max=1000,
+            ui_layout="generic_mouse", supported_buttons=("middle", "hscroll_left"))
+        backend = self._make_backend(
+            engine=_FakeEngine(device_connected=True, connected_device=device))
+        with patch("ui.backend.sys.platform", "darwin"):
+            self.assertFalse(backend.hscrollModifierEligible)
+
+    def test_not_eligible_off_macos(self):
+        backend = self._make_backend(
+            engine=_FakeEngine(device_connected=True, connected_device=self._owner_device()))
+        with patch("ui.backend.sys.platform", "win32"):
+            self.assertFalse(backend.hscrollModifierEligible)
+
+    def test_set_speed_persists_and_reads_back(self):
+        backend = self._make_backend()
+        backend.setHscrollModifierSpeed(2.5)
+        self.assertEqual(backend.hscrollModifierSpeed, 2.5)
+        self.assertEqual(backend._cfg["settings"]["hscroll_modifier_speed"], 2.5)
+
+    def test_set_invert_persists_and_reads_back(self):
+        backend = self._make_backend()
+        self.assertFalse(backend.hscrollModifierInvert)
+        backend.setHscrollModifierInvert(True)
+        self.assertTrue(backend.hscrollModifierInvert)
+        self.assertTrue(backend._cfg["settings"]["hscroll_modifier_invert"])
+
+
 class BackendDeviceLayoutTests(unittest.TestCase):
     def _make_backend(self, engine=None, root_dir=None, cfg=None):
         loaded_config = copy.deepcopy(cfg or DEFAULT_CONFIG)

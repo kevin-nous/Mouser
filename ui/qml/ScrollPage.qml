@@ -1195,6 +1195,43 @@ Item {
                         }
                     }
 
+                    // Horizontal-scroll hold modifier: invert toggle. Only shown
+                    // where the modifier can exist (macOS + event-tap owner device).
+                    Rectangle {
+                        width: parent.width
+                        height: 52
+                        radius: 10
+                        color: scrollPage.theme.bgSubtle
+                        visible: backend.hscrollModifierEligible
+
+                        RowLayout {
+                            anchors {
+                                fill: parent
+                                leftMargin: 16
+                                rightMargin: 16
+                            }
+
+                            Text {
+                                text: s["scroll.hscroll_modifier_invert"]
+                                font {
+                                    family: uiState.fontFamily
+                                    pixelSize: 13
+                                }
+                                color: scrollPage.theme.textPrimary
+                                Layout.fillWidth: true
+                            }
+
+                            Switch {
+                                id: hscrollModifierInvertSwitch
+                                checked: backend.hscrollModifierInvert
+                                focusPolicy: Qt.StrongFocus
+                                Material.accent: scrollPage.theme.accent
+                                Accessible.name: s["scroll.hscroll_modifier_invert"]
+                                onClicked: backend.setHscrollModifierInvert(checked)
+                            }
+                        }
+                    }
+
                     Rectangle {
                         width: parent.width
                         height: 62
