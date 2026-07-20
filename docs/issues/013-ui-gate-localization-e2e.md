@@ -9,6 +9,19 @@ effort: L
 
 # UI surface + macOS/device gate + localization + hardware E2E
 
+> **Build status (2026-07-20): PARTIAL — status stays `ready`.**
+> Done + tested: backend `hscrollModifierEligible` gate, `hscrollModifierSpeed`/
+> `hscrollModifierInvert` properties + persisting setters (5 backend tests); the
+> invert toggle in `ui/qml/ScrollPage.qml` (gated, offscreen-compile-validated);
+> en/zh-CN/zh-TW locale keys.
+> Open: (1) speed-factor **slider** UI (setter exists, no control yet);
+> (2) per-button action-picker hiding of `horizontal_scroll_hold` — functionally
+> safe today (the engine won't arm the modifier on an ineligible device/platform),
+> just not visually hidden per-button; (3) **hardware E2E on the real 2S**,
+> including calibrating `_HSCROLL_DIRECTION_SIGN` (mouse_hook_macos.py) for the
+> PRD default "wheel up → content left", and confirming no double-inversion under
+> macOS natural scrolling. These need the physical device and a running app.
+
 ## What
 Expose the feature in the app and gate it correctly, then verify end-to-end on the real 2S:
 - Remap UI: the new "Horizontal scroll (hold)" assignable item for gesture-owner buttons,
