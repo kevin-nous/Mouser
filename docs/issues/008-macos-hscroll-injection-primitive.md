@@ -3,7 +3,7 @@ id: 008
 title: macOS proportional horizontal-scroll injection primitive (re-entry-safe)
 status: shipped
 shipped_at: 2026-07-20
-shipped_commit: d63b9fd2d11a
+shipped_commit: e78b0b23db44
 depends_on: []
 effort: M
 # status transitions owned by /cc:build (§ Closing the Issue)
