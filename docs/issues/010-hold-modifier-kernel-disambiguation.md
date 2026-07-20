@@ -1,7 +1,9 @@
 ---
 id: 010
 title: Hold-modifier kernel — first-threshold-crossing claim (wheel→hscroll vs motion→gesture)
-status: ready
+status: shipped
+shipped_at: 2026-07-20
+shipped_commit: 63a619f60f34
 depends_on: [008, 009]
 effort: L
 # status transitions owned by /cc:build (§ Closing the Issue)
