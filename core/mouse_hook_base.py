@@ -173,6 +173,11 @@ class BaseMouseHook:
             self._gesture_triggered = False
             self._gesture_input_source = None
 
+    def configure_hscroll_modifier(self, owner):
+        """Set the horizontal-scroll hold-modifier owner button. No-op on
+        platforms without the event-tap hold (Windows/Linux); the macOS hook
+        overrides this (issue 010)."""
+
     def set_connection_change_callback(self, cb):
         self._connection_change_cb = cb
 

@@ -31,6 +31,14 @@ HSCROLL_ACTION_COOLDOWN_S = 0.35
 HSCROLL_VOLUME_COOLDOWN_S = 0.06
 _VOLUME_ACTIONS = {"volume_up", "volume_down"}
 
+# Config button-mapping key -> event-tap gesture owner name, for resolving which
+# button is bound to the horizontal_scroll_hold modifier action (issue 010).
+_HSCROLL_MODIFIER_BTN_TO_OWNER = {
+    "xbutton1": "back",
+    "xbutton2": "forward",
+    "middle": "middle",
+}
+
 
 class Engine:
     """
@@ -137,6 +145,25 @@ class Engine:
             if enabled_flags.get(owner, False) and f"gesture_{owner}_left" in device_buttons
         }
 
+    def _active_hscroll_modifier_owner(self, cfg, settings):
+        """The owner button (back/forward/middle) bound to horizontal_scroll_hold
+        AND able to host an event-tap owner hold on the connected device, or None.
+        Unlike _active_gesture_owners this is NOT gated on the slide-gesture enable
+        toggle -- the hold modifier is its own opt-in feature (issue 010)."""
+        mappings = get_active_mappings(cfg)
+        owner = next(
+            (owner_name for btn_key, owner_name in _HSCROLL_MODIFIER_BTN_TO_OWNER.items()
+             if mappings.get(btn_key) == "horizontal_scroll_hold"),
+            None,
+        )
+        if owner is None:
+            return None
+        device = getattr(self, "connected_device", None)
+        device_buttons = getattr(device, "supported_buttons", None) if device else None
+        if device_buttons is None or f"gesture_{owner}_left" not in device_buttons:
+            return None
+        return owner
+
     def _setup_hooks(self):
         """Register callbacks and block events for all mapped buttons."""
         mappings = get_active_mappings(self.cfg)
@@ -150,6 +177,11 @@ class Engine:
         self.hook.debug_mode = self._debug_events_enabled
         owners = self._active_gesture_owners(self.cfg, settings)
         tilt_owners = self._active_tilt_owners(self.cfg, settings)
+        # Horizontal-scroll hold modifier (issue 010): its owner must also be
+        # armed as a gesture owner so the button-hold enters the event-tap kernel.
+        hscroll_modifier_owner = self._active_hscroll_modifier_owner(self.cfg, settings)
+        if hscroll_modifier_owner:
+            owners = owners | {hscroll_modifier_owner}
         self.hook.configure_gestures(
             enabled=bool(owners) or bool(tilt_owners) or any(
                 mappings.get(key, "none") != "none" for key in GESTURE_DIRECTION_BUTTONS
@@ -163,6 +195,7 @@ class Engine:
             tilt_owners=tilt_owners,
             tilt_release_ms=settings.get("tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT),
         )
+        self.hook.configure_hscroll_modifier(hscroll_modifier_owner)
         # Divert mode shift CID only when the device has the button and
         # at least one profile maps it to an action.  When no device is
         # connected yet, assume the button exists (safe: if the device

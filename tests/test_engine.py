@@ -82,6 +82,9 @@ class _FakeMouseHook:
     def configure_gestures(self, **kwargs):
         self._gesture_config = kwargs
 
+    def configure_hscroll_modifier(self, owner):
+        self._hscroll_modifier_owner_arg = owner
+
     def block(self, event_type):
         pass
 
@@ -153,6 +156,35 @@ class EngineHorizontalScrollTests(unittest.TestCase):
             patch("core.engine.load_config", return_value=cfg),
         ):
             return Engine()
+
+    def test_setup_hooks_wires_hscroll_modifier_owner_when_bound(self):
+        """Issue 010 engine wiring — a button bound to horizontal_scroll_hold on a
+        device that hosts that event-tap owner becomes the modifier AND is armed."""
+        engine = self._make_engine()
+        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "horizontal_scroll_hold"
+        engine.hook.connected_device = SimpleNamespace(
+            supported_buttons=frozenset(
+                {"gesture_back_left", "gesture_back_right",
+                 "gesture_back_up", "gesture_back_down"}))
+        engine._setup_hooks()
+        self.assertEqual(engine.hook._hscroll_modifier_owner_arg, "back")
+        # must also be armed as an owner, else the hold never enters the kernel
+        self.assertIn("back", engine.hook._gesture_config["owners"])
+
+    def test_setup_hooks_no_hscroll_modifier_when_unbound(self):
+        engine = self._make_engine()
+        engine.hook.connected_device = SimpleNamespace(
+            supported_buttons=frozenset({"gesture_back_left"}))
+        engine._setup_hooks()
+        self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
+
+    def test_setup_hooks_no_hscroll_modifier_when_device_ineligible(self):
+        """Bound, but the device can't host an event-tap owner there → not armed."""
+        engine = self._make_engine()
+        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "horizontal_scroll_hold"
+        engine.hook.connected_device = SimpleNamespace(supported_buttons=frozenset({"middle"}))
+        engine._setup_hooks()
+        self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
 
     def test_hscroll_desktop_action_uses_cooldown(self):
         engine = self._make_engine()

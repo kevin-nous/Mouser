@@ -355,6 +355,96 @@ class EventTapGestureStateTransitionTests(unittest.TestCase):
                 self.assertEqual(self.quartz.posted_events, [])  # no native replay
 
 
+class HScrollHoldModifierTests(unittest.TestCase):
+    """Issue 010 — first-threshold-crossing disambiguation on the modifier button:
+    hold + wheel => proportional horizontal scroll; hold + motion => slide gesture;
+    quick tap => normal click. One mode per hold, no mixing."""
+
+    def setUp(self):
+        MouseHook, quartz = _load_mouse_hook_macos()
+        # the fake needs a scroll-event constructor for _inject_hscroll
+        quartz.CGEventCreateScrollWheelEvent = lambda *a: _FakeCGEvent()
+        self.quartz = quartz
+        self.hook = MouseHook()
+        self.hook.configure_gestures(
+            enabled=True, threshold=50, deadzone=40,
+            timeout_ms=3000, cooldown_ms=500, owners={"back", "forward"},
+            hold_floor_ms=80,
+        )
+        self.hook.configure_hscroll_modifier("back")  # bind modifier to the back button
+
+    def _down(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseDown, ev, None)
+
+    def _up(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseUp, ev, None)
+
+    def _move(self, dx, dy):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventDeltaX] = dx
+        ev.fields[self.quartz.kCGMouseEventDeltaY] = dy
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventMouseMoved, ev, None)
+
+    def _scroll(self, v=0.0, h=0.0):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis1] = int(v * 65536)
+        ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis2] = int(h * 65536)
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
+
+    def test_hold_modifier_then_wheel_injects_horizontal_and_swallows(self):
+        self._down(_BACK_BTN)
+        result = self._scroll(v=2.0)
+        self.assertIsNone(result)                          # original vertical swallowed
+        self.assertEqual(len(self.quartz.posted_events), 1)  # exactly one hscroll injected
+        self.assertEqual(self.hook._hold_claim, "hscroll")
+
+    def test_wheel_first_then_motion_ignored_and_no_click_on_release(self):
+        self._down(_BACK_BTN)
+        self._scroll(v=2.0)                                 # claim hscroll
+        self.hook._gesture_press_at = time.monotonic() - 0.2
+        self._move(120, 0)                                 # motion now ignored
+        result = self._up(_BACK_BTN)
+        self.assertIsNone(result)
+        self.assertTrue(self.hook._dispatch_queue.empty())  # no gesture, no normal click
+        self.assertIsNone(self.hook._gesture_owner)
+
+    def test_motion_first_then_wheel_does_not_inject_and_gesture_fires(self):
+        self._down(_BACK_BTN)
+        self.hook._gesture_press_at = time.monotonic() - 0.2
+        self._move(120, 0)                                 # claim gesture
+        self.assertEqual(self.hook._hold_claim, "gesture")
+        posted_before = len(self.quartz.posted_events)
+        self._scroll(v=2.0)                                # wheel ignored for hscroll
+        self.assertEqual(len(self.quartz.posted_events), posted_before)  # nothing injected
+        self._up(_BACK_BTN)
+        fired = self.hook._dispatch_queue.get_nowait()
+        self.assertEqual(fired.event_type, MouseEvent.GESTURE_SWIPE_RIGHT)
+
+    def test_quick_tap_of_modifier_still_fires_normal_click(self):
+        self._down(_BACK_BTN)
+        self._up(_BACK_BTN)                                 # no wheel, no motion
+        fired = [self.hook._dispatch_queue.get_nowait(),
+                 self.hook._dispatch_queue.get_nowait()]
+        self.assertEqual([e.event_type for e in fired],
+                         [MouseEvent.XBUTTON1_DOWN, MouseEvent.XBUTTON1_UP])
+
+    def test_non_modifier_owner_hold_does_not_divert_wheel(self):
+        self._down(_FORWARD_BTN)                            # forward is NOT the modifier
+        posted_before = len(self.quartz.posted_events)
+        self._scroll(v=2.0)
+        self.assertEqual(len(self.quartz.posted_events), posted_before)  # no injection
+        self.assertIsNone(self.hook._hold_claim)
+
+    def test_first_wheel_delta_scrolls_no_dead_tick(self):
+        self._down(_BACK_BTN)
+        self._scroll(v=1.0)                                # the very first tick
+        self.assertEqual(len(self.quartz.posted_events), 1)  # claims AND scrolls
+
+
 _TILT_RIGHT_PULSE = 1 * 65536  # fixed-point h_delta = +1.0 -> tilt_right
 _TILT_LEFT_PULSE = -1 * 65536  # fixed-point h_delta = -1.0 -> tilt_left
 

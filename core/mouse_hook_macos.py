@@ -91,6 +91,13 @@ class MouseHook(BaseMouseHook):
         self._tilt_release_timer = None
         self._tilt_release_ms = 150
         self._tilt_lock = threading.Lock()
+        # Horizontal-scroll hold modifier (issue 010): which owner button, while
+        # held, turns the vertical wheel into horizontal scroll. _hold_claim
+        # implements first-threshold-crossing: None until the first qualifying
+        # secondary input claims the hold as "hscroll" (wheel first) or
+        # "gesture" (motion first); the loser is ignored until release.
+        self._hscroll_modifier_owner = None
+        self._hold_claim = None
 
     def _negate_scroll_axis(self, cg_event, axis):
         for field_name in (
@@ -178,6 +185,12 @@ class MouseHook(BaseMouseHook):
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
         return True
+
+    def configure_hscroll_modifier(self, owner):
+        """Set which gesture-owner button (e.g. "back") acts as the momentary
+        horizontal-scroll modifier, or None to disable. Called by the engine
+        when a button is bound to the horizontal_scroll_hold action (#010)."""
+        self._hscroll_modifier_owner = owner
 
     def _accumulate_gesture_delta(self, delta_x, delta_y, source):
         if not (self._gesture_direction_enabled and self._gesture_active):
@@ -303,6 +316,7 @@ class MouseHook(BaseMouseHook):
         self._gesture_owner_btn = None
         self._gesture_press_at = 0.0
         self._gesture_triggered = False
+        self._hold_claim = None
         timer = self._tilt_release_timer
         if timer is not None:
             timer.cancel()
@@ -327,6 +341,11 @@ class MouseHook(BaseMouseHook):
     def _finish_event_tap_gesture(self, btn):
         """Resolve an armed owner-button release: fire the tagged gesture event,
         or replay the deferred normal click (dual-mode, D2/D4)."""
+        if self._hold_claim == "hscroll":
+            # The hold was spent scrolling horizontally -- it is neither a slide
+            # gesture nor a tap, so fire NOTHING (no normal click) and reset.
+            self._reset_event_tap_gesture_state()
+            return
         owner = self._gesture_owner
         held_ms = (time.monotonic() - self._gesture_press_at) * 1000.0
         decision, direction = decide_gesture(
@@ -517,6 +536,12 @@ class MouseHook(BaseMouseHook):
                 ):
                     self._abort_event_tap_gesture("timeout")
                     # fall through -- do not swallow this move
+                elif self._hold_claim == "hscroll":
+                    # The modifier hold is committed to horizontal scrolling:
+                    # ignore motion for gesture purposes (don't accumulate), but
+                    # still swallow it (cursor stays put) -- motion is "ignored
+                    # until release" (issue 010).
+                    return None
                 else:
                     # Event-tap owner gesture: accumulate for the on-release
                     # decision and freeze the cursor (D8) by swallowing the
@@ -527,6 +552,14 @@ class MouseHook(BaseMouseHook):
                     self._gesture_delta_y += Quartz.CGEventGetIntegerValueField(
                         cg_event, Quartz.kCGMouseEventDeltaY
                     )
+                    # First-threshold-crossing: on the modifier button, the first
+                    # motion past the slide threshold claims the hold as "gesture",
+                    # after which the wheel is ignored for hscroll (issue 010).
+                    if (self._gesture_owner == self._hscroll_modifier_owner
+                            and self._hold_claim is None
+                            and (abs(self._gesture_delta_x) >= self._gesture_threshold
+                                 or abs(self._gesture_delta_y) >= self._gesture_threshold)):
+                        self._hold_claim = "gesture"
                     # Tilt gestures fire the INSTANT the slide crosses threshold
                     # (mid-hold), not on release: the tilt's pulse stream can
                     # fragment (gentle holds pulse slowly), so decide-on-release
@@ -609,6 +642,7 @@ class MouseHook(BaseMouseHook):
                     self._gesture_owner = owner
                     self._gesture_owner_btn = btn
                     self._gesture_triggered = False
+                    self._hold_claim = None
                     self._gesture_press_at = time.monotonic()
                     self._start_gesture_tracking()
                     self._emit_debug(f"Event-tap gesture armed owner={owner} btn={btn}")
@@ -666,6 +700,22 @@ class MouseHook(BaseMouseHook):
                 h_delta = h_delta / 65536.0
                 if h_delta != 0 and self._maybe_arm_tilt_gesture(h_delta):
                     return None  # tilt gesture armed/held -- swallow the scroll
+                # Horizontal-scroll hold modifier (issue 010): while the modifier
+                # button is held, the vertical wheel becomes horizontal scroll.
+                # First-threshold-crossing -- claim the hold as "hscroll" unless a
+                # slide gesture already claimed it (then leave the wheel alone).
+                if (self._gesture_active
+                        and self._gesture_owner is not None
+                        and self._gesture_owner == self._hscroll_modifier_owner
+                        and self._hold_claim in (None, "hscroll")):
+                    v_delta = Quartz.CGEventGetIntegerValueField(
+                        cg_event, Quartz.kCGScrollWheelEventFixedPtDeltaAxis1
+                    ) / 65536.0
+                    if v_delta != 0:
+                        self._hold_claim = "hscroll"
+                        # #011 layers scale / invert / direction onto this call.
+                        self._inject_hscroll(v_delta)
+                        return None  # swallow the original vertical scroll
                 if self.debug_mode and self._debug_callback:
                     try:
                         v_delta = (
