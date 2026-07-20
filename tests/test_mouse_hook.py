@@ -1004,5 +1004,86 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
         self.assertEqual(event.event_type, mouse_hook.MouseEvent.HSCROLL_RIGHT)
 
 
+@unittest.skipUnless(sys.platform == "darwin", "macOS-only tests")
+class MacOSHScrollInjectionTests(unittest.TestCase):
+    """Issue 008 — proportional, re-entry-safe horizontal-scroll injection."""
+
+    _kCGEventScrollWheel = 22  # Quartz.kCGEventScrollWheel
+
+    def setUp(self):
+        self.mock_quartz = MagicMock(name="Quartz")
+        self.mock_quartz.kCGEventScrollWheel = self._kCGEventScrollWheel
+        # distinct sentinels so positional field lookups are unambiguous
+        self.mock_quartz.kCGEventSourceUserData = "SRC_USER_DATA"
+        self.mock_quartz.kCGScrollWheelEventFixedPtDeltaAxis2 = "FIXED_H"
+        self.mock_quartz.kCGHIDEventTap = "HID_TAP"
+        mouse_hook.Quartz = self.mock_quartz
+
+    def tearDown(self):
+        if hasattr(mouse_hook, "Quartz") and isinstance(
+                mouse_hook.Quartz, MagicMock):
+            del mouse_hook.Quartz
+
+    def _make_hook(self):
+        hook = mouse_hook.MouseHook()
+        hook._running = True
+        hook._tap = MagicMock(name="tap")
+        return hook
+
+    def test_inject_hscroll_is_proportional_to_delta_times_scale(self):
+        """delta 3 * scale 2 => a horizontal (axis-2) scroll event of 6."""
+        hook = self._make_hook()
+        created = MagicMock(name="created_event")
+        self.mock_quartz.CGEventCreateScrollWheelEvent.return_value = created
+
+        hook._inject_hscroll(3.0, scale=2.0)
+
+        self.mock_quartz.CGEventCreateScrollWheelEvent.assert_called_once()
+        args = self.mock_quartz.CGEventCreateScrollWheelEvent.call_args.args
+        # signature: (source, units, wheelCount, wheel1_vertical, wheel2_horizontal)
+        self.assertEqual(args[2], 2)          # wheelCount == 2 (has horizontal axis)
+        self.assertEqual(args[3], 0)          # vertical component is zero (pure horizontal)
+        self.assertEqual(args[4], 6)          # horizontal delta == 3 * 2, worked out by hand
+
+    def test_injected_event_is_marked_and_posted(self):
+        """Injected event must carry _INJECTED_EVENT_MARKER and be posted."""
+        hook = self._make_hook()
+        created = MagicMock(name="created_event")
+        self.mock_quartz.CGEventCreateScrollWheelEvent.return_value = created
+
+        hook._inject_hscroll(4.0)
+
+        self.mock_quartz.CGEventSetIntegerValueField.assert_any_call(
+            created, self.mock_quartz.kCGEventSourceUserData,
+            mouse_hook._INJECTED_EVENT_MARKER)
+        self.mock_quartz.CGEventPost.assert_called_once()
+        self.assertIs(self.mock_quartz.CGEventPost.call_args.args[1], created)
+
+    def test_zero_delta_injects_nothing(self):
+        """A resolved amount of zero must be a no-op (no event posted)."""
+        hook = self._make_hook()
+        hook._inject_hscroll(0.0, scale=5.0)
+        self.mock_quartz.CGEventCreateScrollWheelEvent.assert_not_called()
+        self.mock_quartz.CGEventPost.assert_not_called()
+
+    def test_injected_scroll_event_is_short_circuited_by_callback(self):
+        """A scroll event bearing _INJECTED_EVENT_MARKER must pass straight
+        through the tap callback (returned as-is, nothing dispatched)."""
+        hook = self._make_hook()
+        cg_event = MagicMock(name="injected_cg_event")
+
+        def _get(event, field):
+            if field == self.mock_quartz.kCGEventSourceUserData:
+                return mouse_hook._INJECTED_EVENT_MARKER
+            return 0
+        self.mock_quartz.CGEventGetIntegerValueField.side_effect = _get
+
+        result = hook._event_tap_callback(
+            None, self._kCGEventScrollWheel, cg_event, None)
+
+        self.assertIs(result, cg_event)          # passed through untouched
+        self.assertTrue(hook._dispatch_queue.empty())
+
+
 if __name__ == "__main__":
     unittest.main()

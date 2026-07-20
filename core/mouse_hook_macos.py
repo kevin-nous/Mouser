@@ -157,6 +157,28 @@ class MouseHook(BaseMouseHook):
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, inverted)
         return True
 
+    def _inject_hscroll(self, delta, scale=1.0):
+        """Inject a proportional horizontal scroll event (issue 008).
+
+        ``delta`` is passed straight through (× ``scale``) — no debounce,
+        threshold or cooldown, so it keeps real-mouse proportional feel. The
+        event is stamped with ``_INJECTED_EVENT_MARKER`` so our own tap
+        callback short-circuits it (line ~470) rather than re-processing it,
+        which would otherwise create a feedback loop.
+        """
+        amount = int(round(delta * scale))
+        if amount == 0:
+            return False
+        # signature: (source, units, wheelCount, wheel1_vertical, wheel2_horizontal)
+        event = Quartz.CGEventCreateScrollWheelEvent(None, 0, 2, 0, amount)
+        if not event:
+            return False
+        Quartz.CGEventSetIntegerValueField(
+            event, Quartz.kCGEventSourceUserData, _INJECTED_EVENT_MARKER
+        )
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        return True
+
     def _accumulate_gesture_delta(self, delta_x, delta_y, source):
         if not (self._gesture_direction_enabled and self._gesture_active):
             return
