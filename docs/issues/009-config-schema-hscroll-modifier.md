@@ -1,9 +1,13 @@
 ---
 id: 009
 title: Config schema — hscroll-modifier binding, speed factor, dedicated invert toggle
-status: ready
+status: shipped
+shipped_at: 2026-07-20
+shipped_commit: a5933c07c5a3
 depends_on: []
 effort: S
+# note: settings named hscroll_modifier_speed / hscroll_modifier_invert (prefixed to
+# avoid confusion with the pre-existing invert_hscroll, which inverts tilt INPUT).
 # status transitions owned by /cc:build (§ Closing the Issue)
 ---
 
