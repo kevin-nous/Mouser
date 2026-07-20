@@ -1,7 +1,9 @@
 ---
 id: 011
 title: Direction default, dedicated invert toggle (no double-invert), speed factor
-status: ready
+status: shipped
+shipped_at: 2026-07-20
+shipped_commit: 66ea42bfdd7a
 depends_on: [010]
 effort: M
 # status transitions owned by /cc:build (§ Closing the Issue)
