@@ -476,10 +476,41 @@ class HScrollGuardrailTests(unittest.TestCase):
         ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis1] = int(v * 65536)
         return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
 
+    def _move(self, dx, dy):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventDeltaX] = dx
+        ev.fields[self.quartz.kCGMouseEventDeltaY] = dy
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventMouseMoved, ev, None)
+
     def _enter_hscroll(self):
         self._down(_BACK_BTN)
         self._scroll(v=2.0)
         self.assertEqual(self.hook._hold_claim, "hscroll")
+
+    def test_f1_half_speed_accumulates_instead_of_dropping(self):
+        """Review F1: at speed 0.5, two 1.0 notches must produce one horizontal
+        step via a residual accumulator -- not zero (int(round(0.5))==0)."""
+        self.hook.hscroll_modifier_speed = 0.5
+        self._down(_BACK_BTN)
+        self._scroll(v=1.0)                        # residual 0.5 -> nothing yet
+        self._scroll(v=1.0)                        # residual 1.0 -> one step
+        self.assertEqual(len(self.quartz.posted_events), 1)
+
+    def test_f2_active_scroll_keeps_hold_alive_past_timeout(self):
+        """Review F2: an active diverted scroll refreshes the hold so a later
+        move is not aborted as a dropped button-up."""
+        self._down(_BACK_BTN)
+        self.hook._gesture_press_at = time.monotonic() - 10.0   # older than 3s timeout
+        self._scroll(v=2.0)                        # must refresh the hold
+        self._move(5, 0)
+        self.assertTrue(self.hook._gesture_active)  # not aborted
+
+    def test_f3_reconfigure_clears_committed_hold(self):
+        """Review F3: unbinding the modifier mid-hold clears the committed hold
+        so the cursor isn't left frozen."""
+        self._enter_hscroll()
+        self.hook.configure_hscroll_modifier(None)
+        self.assertIsNone(self.hook._hold_claim)
 
     def test_s0_button_up_clears_hold(self):
         self._enter_hscroll()

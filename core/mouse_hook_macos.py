@@ -104,6 +104,7 @@ class MouseHook(BaseMouseHook):
         # "gesture" (motion first); the loser is ignored until release.
         self._hscroll_modifier_owner = None
         self._hold_claim = None
+        self._hscroll_residual = 0.0
 
     def _negate_scroll_axis(self, cg_event, axis):
         for field_name in (
@@ -178,10 +179,17 @@ class MouseHook(BaseMouseHook):
         event is stamped with ``_INJECTED_EVENT_MARKER`` so our own tap
         callback short-circuits it (line ~470) rather than re-processing it,
         which would otherwise create a feedback loop.
+
+        A fractional residual is accumulated across calls so sub-1 products
+        (e.g. speed 0.5, or hi-res/free-spin fine deltas) aren't rounded to 0
+        and silently dropped -- they carry until they sum to a whole step
+        (review F1). The residual is cleared when the hold ends.
         """
-        amount = int(round(delta * scale))
+        self._hscroll_residual += delta * scale
+        amount = int(self._hscroll_residual)  # truncate toward zero, keep the rest
         if amount == 0:
             return False
+        self._hscroll_residual -= amount
         # signature: (source, units, wheelCount, wheel1_vertical, wheel2_horizontal)
         event = Quartz.CGEventCreateScrollWheelEvent(None, 0, 2, 0, amount)
         if not event:
@@ -196,6 +204,10 @@ class MouseHook(BaseMouseHook):
         """Set which gesture-owner button (e.g. "back") acts as the momentary
         horizontal-scroll modifier, or None to disable. Called by the engine
         when a button is bound to the horizontal_scroll_hold action (#010)."""
+        if owner != self._hscroll_modifier_owner:
+            # Reconfiguring/unbinding mid-hold must not leave a committed hold
+            # swallowing motion (frozen cursor) against a now-stale owner (F3).
+            self.reset_hscroll_hold()
         self._hscroll_modifier_owner = owner
 
     def reset_hscroll_hold(self):
@@ -332,6 +344,7 @@ class MouseHook(BaseMouseHook):
         self._gesture_press_at = 0.0
         self._gesture_triggered = False
         self._hold_claim = None
+        self._hscroll_residual = 0.0
         timer = self._tilt_release_timer
         if timer is not None:
             timer.cancel()
@@ -737,6 +750,11 @@ class MouseHook(BaseMouseHook):
                     ) / 65536.0
                     if v_delta != 0:
                         self._hold_claim = "hscroll"
+                        # An active scroll proves the button is still held, so
+                        # refresh the press time: otherwise a hold+scroll lasting
+                        # longer than gesture_timeout_ms would be aborted as a
+                        # dropped button-up on the next mouse move (review F2).
+                        self._gesture_press_at = time.monotonic()
                         # Apply speed, default direction, and the dedicated invert
                         # toggle (issue 011). Reuses _inject_hscroll's scale arg.
                         scale = self.hscroll_modifier_speed * _HSCROLL_DIRECTION_SIGN
