@@ -198,6 +198,15 @@ class MouseHook(BaseMouseHook):
         when a button is bound to the horizontal_scroll_hold action (#010)."""
         self._hscroll_modifier_owner = owner
 
+    def reset_hscroll_hold(self):
+        """Guardrail S3 (issue 012): clear a stuck horizontal-scroll hold (e.g.
+        on a foreground app change) so a dropped button-up can't leave the wheel
+        stuck horizontal and silently kill vertical scrolling. Only acts when a
+        hold is actually committed to hscroll, so it never disturbs a normal
+        armed gesture."""
+        if self._hold_claim == "hscroll":
+            self._reset_event_tap_gesture_state()
+
     def _accumulate_gesture_delta(self, delta_x, delta_y, source):
         if not (self._gesture_direction_enabled and self._gesture_active):
             return
@@ -638,6 +647,15 @@ class MouseHook(BaseMouseHook):
                         self._debug_callback(f"OtherMouseDown btn={btn}")
                     except Exception:
                         pass
+                # Guardrail S2 (issue 012): a different tapped mouse button going
+                # down while horizontal-scroll is active clears the (possibly
+                # stuck) hold; this button then arms/processes normally. NOTE the
+                # tap sees only middle/back/forward + scroll -- left/right clicks
+                # and the keyboard cannot trigger S2 (S1/S3 backstop those).
+                if (self._hold_claim == "hscroll"
+                        and self._gesture_owner_btn is not None
+                        and btn != self._gesture_owner_btn):
+                    self._reset_event_tap_gesture_state()
                 owner = _BTN_TO_OWNER.get(btn)
                 if owner and should_arm_gesture(
                     self._gesture_active, owner, self._gesture_owners

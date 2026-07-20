@@ -445,6 +445,73 @@ class HScrollHoldModifierTests(unittest.TestCase):
         self.assertEqual(len(self.quartz.posted_events), 1)  # claims AND scrolls
 
 
+class HScrollGuardrailTests(unittest.TestCase):
+    """Issue 012 — a horizontal-scroll hold must never get stuck (which would
+    silently kill vertical scrolling). Cleared on button-up (S0), tap re-enable
+    (S1), another tapped mouse button (S2), and reset_hscroll_hold (S3 hook)."""
+
+    def setUp(self):
+        MouseHook, quartz = _load_mouse_hook_macos()
+        quartz.CGEventCreateScrollWheelEvent = lambda *a: _FakeCGEvent()
+        self.quartz = quartz
+        self.hook = MouseHook()
+        self.hook.configure_gestures(
+            enabled=True, threshold=50, deadzone=40,
+            timeout_ms=3000, cooldown_ms=500, owners={"back", "forward"},
+            hold_floor_ms=80)
+        self.hook.configure_hscroll_modifier("back")
+
+    def _down(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseDown, ev, None)
+
+    def _up(self, btn):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGMouseEventButtonNumber] = btn
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventOtherMouseUp, ev, None)
+
+    def _scroll(self, v=0.0):
+        ev = _FakeCGEvent()
+        ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis1] = int(v * 65536)
+        return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
+
+    def _enter_hscroll(self):
+        self._down(_BACK_BTN)
+        self._scroll(v=2.0)
+        self.assertEqual(self.hook._hold_claim, "hscroll")
+
+    def test_s0_button_up_clears_hold(self):
+        self._enter_hscroll()
+        self._up(_BACK_BTN)
+        self.assertIsNone(self.hook._hold_claim)
+        posted = len(self.quartz.posted_events)
+        self._scroll(v=2.0)                       # no hold -> not diverted
+        self.assertEqual(len(self.quartz.posted_events), posted)
+
+    def test_s1_tap_reenable_clears_hold(self):
+        self._enter_hscroll()
+        self.hook._event_tap_callback(None, 0xFFFFFFFE, _FakeCGEvent(), None)  # tap disabled
+        self.assertIsNone(self.hook._hold_claim)
+
+    def test_s2_other_mouse_button_clears_hold(self):
+        self._enter_hscroll()
+        self._down(_FORWARD_BTN)                  # a different tapped mouse button
+        self.assertNotEqual(self.hook._hold_claim, "hscroll")
+
+    def test_s3_reset_hscroll_hold_clears_when_active(self):
+        self._enter_hscroll()
+        self.hook.reset_hscroll_hold()
+        self.assertIsNone(self.hook._hold_claim)
+
+    def test_s4_absent_no_idle_watchdog_drops_a_legit_hold(self):
+        # A finger-down-not-yet-scrolling hold must survive: nothing claimed, and
+        # no timer exists that would clear the armed hold out from under the user.
+        self._down(_BACK_BTN)
+        self.assertTrue(self.hook._gesture_active)
+        self.assertIsNone(self.hook._hold_claim)
+
+
 class HScrollDirectionSpeedTests(unittest.TestCase):
     """Issue 011 — speed factor scales magnitude and the invert toggle reverses
     direction. Absolute 'up->left' sign is hardware-calibrated (issue 013), so

@@ -182,6 +182,10 @@ class BaseMouseHook:
         platforms without the event-tap hold (Windows/Linux); the macOS hook
         overrides this (issue 010)."""
 
+    def reset_hscroll_hold(self):
+        """Clear a stuck horizontal-scroll hold. No-op off macOS; the macOS hook
+        overrides this (issue 012 guardrail S3)."""
+
     def set_connection_change_callback(self, cb):
         self._connection_change_cb = cb
 

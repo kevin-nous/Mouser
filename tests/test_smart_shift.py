@@ -261,6 +261,7 @@ class _FakeMouseHook:
     def set_connection_change_callback(self, cb): pass
     def configure_gestures(self, **kwargs): pass
     def configure_hscroll_modifier(self, owner): pass
+    def reset_hscroll_hold(self): pass
     def block(self, event_type): pass
     def register(self, event_type, callback): pass
     def reset_bindings(self): pass

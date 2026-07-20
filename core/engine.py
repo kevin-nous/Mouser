@@ -513,6 +513,9 @@ class Engine:
     # ------------------------------------------------------------------
     def _on_app_change(self, exe_name: str):
         """Called by AppDetector when foreground window changes."""
+        # Guardrail S3 (issue 012): a focus change clears any stuck horizontal-
+        # scroll hold, regardless of whether the profile also changes.
+        self.hook.reset_hscroll_hold()
         target = get_profile_for_app(self.cfg, exe_name)
         if target == self._current_profile:
             return

@@ -85,6 +85,9 @@ class _FakeMouseHook:
     def configure_hscroll_modifier(self, owner):
         self._hscroll_modifier_owner_arg = owner
 
+    def reset_hscroll_hold(self):
+        pass
+
     def block(self, event_type):
         pass
 
@@ -195,6 +198,15 @@ class EngineHorizontalScrollTests(unittest.TestCase):
         engine.hook.connected_device = SimpleNamespace(supported_buttons=frozenset({"middle"}))
         engine._setup_hooks()
         self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
+
+    def test_on_app_change_resets_hscroll_hold(self):
+        """Issue 012 S3 — a foreground app change clears any stuck hscroll hold,
+        even when the profile does not change."""
+        engine = self._make_engine()
+        called = []
+        engine.hook.reset_hscroll_hold = lambda: called.append(True)
+        engine._on_app_change("whatever.exe")
+        self.assertEqual(called, [True])
 
     def test_hscroll_desktop_action_uses_cooldown(self):
         engine = self._make_engine()
