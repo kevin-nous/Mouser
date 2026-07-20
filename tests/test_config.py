@@ -22,6 +22,46 @@ def _platform_catalog(platform):
         app_catalog._CATALOG_CACHE = original_cache
 
 
+class HScrollModifierSettingsTests(unittest.TestCase):
+    """Issue 009 — config schema for the horizontal-scroll hold modifier."""
+
+    def _legacy(self, settings=None):
+        return {
+            "version": 1,
+            "active_profile": "default",
+            "profiles": {"default": {"label": "Default", "mappings": {}}},
+            "settings": settings if settings is not None else {},
+        }
+
+    def test_default_config_has_hscroll_modifier_settings(self):
+        s = config.DEFAULT_CONFIG["settings"]
+        self.assertEqual(s["hscroll_modifier_speed"], 1.0)
+        self.assertFalse(s["hscroll_modifier_invert"])
+
+    def test_migrate_adds_hscroll_modifier_defaults(self):
+        migrated = config._migrate(self._legacy())
+        self.assertEqual(migrated["settings"]["hscroll_modifier_speed"], 1.0)
+        self.assertFalse(migrated["settings"]["hscroll_modifier_invert"])
+
+    def test_migrate_preserves_custom_hscroll_modifier_values(self):
+        migrated = config._migrate(self._legacy(
+            {"hscroll_modifier_speed": 2.5, "hscroll_modifier_invert": True}))
+        self.assertEqual(migrated["settings"]["hscroll_modifier_speed"], 2.5)
+        self.assertTrue(migrated["settings"]["hscroll_modifier_invert"])
+
+    def test_save_load_round_trips_hscroll_modifier_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.json")
+            with patch.object(config, "CONFIG_FILE", path):
+                cfg = config.load_config()  # defaults onto empty dir
+                cfg["settings"]["hscroll_modifier_speed"] = 3.0
+                cfg["settings"]["hscroll_modifier_invert"] = True
+                config.save_config(cfg)
+                reloaded = config.load_config()
+        self.assertEqual(reloaded["settings"]["hscroll_modifier_speed"], 3.0)
+        self.assertTrue(reloaded["settings"]["hscroll_modifier_invert"])
+
+
 class ConfigMigrationTests(unittest.TestCase):
     def test_migrate_v1_config_adds_profile_apps_and_gesture_defaults(self):
         legacy = {

@@ -157,6 +157,11 @@ DEFAULT_CONFIG = {
         "gesture_cooldown_ms": 500,
         "gesture_hold_floor_ms": GESTURE_HOLD_FLOOR_MS_DEFAULT,
         "tilt_gesture_release_ms": TILT_GESTURE_RELEASE_MS_DEFAULT,
+        # Horizontal-scroll hold modifier (macOS): scale factor applied to the
+        # vertical wheel delta when converting it to horizontal, and a dedicated
+        # invert toggle independent of invert_hscroll (which inverts tilt input).
+        "hscroll_modifier_speed": 1.0,
+        "hscroll_modifier_invert": False,
         "appearance_mode": "system",
         "debug_mode": False,
         "device_layout_overrides": {},
@@ -424,6 +429,8 @@ def _migrate(cfg):
     cfg["settings"]["tilt_gesture_release_ms"] = max(
         50, int(cfg["settings"].get("tilt_gesture_release_ms", TILT_GESTURE_RELEASE_MS_DEFAULT))
     )
+    cfg["settings"].setdefault("hscroll_modifier_speed", 1.0)
+    cfg["settings"].setdefault("hscroll_modifier_invert", False)
 
     # Always migrate old wmplayer.exe → Microsoft.Media.Player.exe in profile apps
     for pdata in cfg.get("profiles", {}).values():

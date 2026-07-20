@@ -13,6 +13,15 @@ class KeySimulatorActionTests(unittest.TestCase):
     def test_desktop_switch_actions_exist(self):
         self.assertIn("space_left", key_simulator.ACTIONS)
         self.assertIn("space_right", key_simulator.ACTIONS)
+
+    @unittest.skipUnless(sys.platform == "darwin", "horizontal-scroll hold modifier is macOS-only")
+    def test_horizontal_scroll_hold_is_registered_scroll_action(self):
+        """Issue 009 — the modifier is a selectable Scroll-category action on macOS
+        (engine-handled, no keystrokes)."""
+        self.assertIn("horizontal_scroll_hold", key_simulator.ACTIONS)
+        entry = key_simulator.ACTIONS["horizontal_scroll_hold"]
+        self.assertEqual(entry["category"], "Scroll")
+        self.assertEqual(entry["keys"], [])
         self.assertEqual(key_simulator.ACTIONS["space_left"]["label"], "Previous Desktop")
         self.assertEqual(key_simulator.ACTIONS["space_right"]["label"], "Next Desktop")
 

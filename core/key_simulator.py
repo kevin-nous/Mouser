@@ -1210,6 +1210,11 @@ elif sys.platform == "darwin":
             "keys": [],               # handled by Engine, not key_simulator
             "category": "Scroll",
         },
+        "horizontal_scroll_hold": {
+            "label": "Horizontal Scroll (Hold)",
+            "keys": [],               # a while-held modifier, handled by Engine/hook
+            "category": "Scroll",
+        },
         "mouse_left_click": {
             "label": "Left Click",
             "keys": [],
