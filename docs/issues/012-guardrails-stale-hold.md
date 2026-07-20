@@ -1,7 +1,9 @@
 ---
 id: 012
 title: Guardrails S0–S3 — stale-hold clearing (no stuck horizontal mode)
-status: ready
+status: shipped
+shipped_at: 2026-07-20
+shipped_commit: 60a7afd1c0bc
 depends_on: [010]
 effort: M
 # status transitions owned by /cc:build (§ Closing the Issue)
