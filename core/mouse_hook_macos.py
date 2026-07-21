@@ -57,8 +57,9 @@ _INJECTED_EVENT_MARKER = 0x4D4F5554
 # (issue 011). +1/-1 only; which sign yields the PRD default "wheel up -> content
 # scrolls left" is hardware-calibrated (issue 013 E2E) -- flip this one constant.
 # The user-facing invert toggle negates it, so relative direction is correct
-# regardless of how this is finally calibrated.
-_HSCROLL_DIRECTION_SIGN = 1
+# regardless of how this is finally calibrated. Calibrated on real 2S hardware
+# (2026-07-21): -1 gives wheel-up -> content-left.
+_HSCROLL_DIRECTION_SIGN = -1
 _kCGEventTapDisabledByTimeout = 0xFFFFFFFE
 _kCGEventTapDisabledByUserInput = 0xFFFFFFFF
 
@@ -218,6 +219,65 @@ class MouseHook(BaseMouseHook):
         armed gesture."""
         if self._hold_claim == "hscroll":
             self._reset_event_tap_gesture_state()
+
+    def _try_hscroll_modifier_divert(self, cg_event):
+        """If the hold-modifier button is held (and a slide gesture hasn't claimed
+        the hold), convert the vertical wheel into horizontal scroll and swallow
+        the original. Returns True if it diverted.
+
+        Runs BEFORE the trackpad guard on purpose: the MX Anywhere 2S hi-res wheel
+        reports its scroll events as continuous, so ignore_trackpad would otherwise
+        swallow them before this ever sees them. Gated on _gesture_active + owner
+        match, so it never touches normal (non-held) scrolling.
+        """
+        if not (self._gesture_active
+                and self._gesture_owner is not None
+                and self._gesture_owner == self._hscroll_modifier_owner
+                and self._hold_claim in (None, "hscroll")):
+            return False
+        v_fixed = Quartz.CGEventGetIntegerValueField(
+            cg_event, Quartz.kCGScrollWheelEventFixedPtDeltaAxis1
+        )
+        if v_fixed == 0:
+            return False
+        self._hold_claim = "hscroll"
+        # An active scroll proves the button is still held, so refresh the press
+        # time (else a hold+scroll longer than gesture_timeout_ms is aborted as a
+        # dropped button-up on the next move -- review F2).
+        self._gesture_press_at = time.monotonic()
+        scale = self.hscroll_modifier_speed * _HSCROLL_DIRECTION_SIGN
+        if self.hscroll_modifier_invert:
+            scale = -scale
+        self._post_hscroll_from_vertical(cg_event, scale)
+        return True
+
+    def _post_hscroll_from_vertical(self, cg_event, scale):
+        """Emit a horizontal scroll event by copying the source wheel event's
+        vertical (axis-1) delta fields onto the horizontal axis (axis-2), scaled.
+        Mirrors _post_inverted_scroll_event (proven to inject real, app-visible
+        scrolls) instead of a bare CGEventCreateScrollWheelEvent, whose wheel arg
+        alone doesn't populate the Point/FixedPt delta fields apps read."""
+        new = Quartz.CGEventCreateScrollWheelEvent(
+            None, Quartz.kCGScrollEventUnitPixel, 2, 0, 0
+        )
+        if not new:
+            return
+        Quartz.CGEventSetFlags(new, Quartz.CGEventGetFlags(cg_event))
+        Quartz.CGEventSetIntegerValueField(
+            new, Quartz.kCGEventSourceUserData, _INJECTED_EVENT_MARKER
+        )
+        for axis1, axis2 in (
+            ("kCGScrollWheelEventDeltaAxis1", "kCGScrollWheelEventDeltaAxis2"),
+            ("kCGScrollWheelEventFixedPtDeltaAxis1", "kCGScrollWheelEventFixedPtDeltaAxis2"),
+            ("kCGScrollWheelEventPointDeltaAxis1", "kCGScrollWheelEventPointDeltaAxis2"),
+        ):
+            f1 = getattr(Quartz, axis1, None)
+            f2 = getattr(Quartz, axis2, None)
+            if f1 is None or f2 is None:
+                continue
+            v = Quartz.CGEventGetIntegerValueField(cg_event, f1)
+            Quartz.CGEventSetIntegerValueField(new, f2, int(v * scale))
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, new)
 
     def _accumulate_gesture_delta(self, delta_x, delta_y, source):
         if not (self._gesture_direction_enabled and self._gesture_active):
@@ -727,6 +787,10 @@ class MouseHook(BaseMouseHook):
                     == _SCROLL_INVERT_MARKER
                 ):
                     return cg_event
+                # Hold-modifier diversion runs BEFORE the trackpad guard: the 2S
+                # hi-res wheel reports continuous, which ignore_trackpad swallows.
+                if self._try_hscroll_modifier_divert(cg_event):
+                    return None
                 if self.ignore_trackpad:
                     is_continuous_field = 88
                     if Quartz.CGEventGetIntegerValueField(cg_event, is_continuous_field):
@@ -737,31 +801,6 @@ class MouseHook(BaseMouseHook):
                 h_delta = h_delta / 65536.0
                 if h_delta != 0 and self._maybe_arm_tilt_gesture(h_delta):
                     return None  # tilt gesture armed/held -- swallow the scroll
-                # Horizontal-scroll hold modifier (issue 010): while the modifier
-                # button is held, the vertical wheel becomes horizontal scroll.
-                # First-threshold-crossing -- claim the hold as "hscroll" unless a
-                # slide gesture already claimed it (then leave the wheel alone).
-                if (self._gesture_active
-                        and self._gesture_owner is not None
-                        and self._gesture_owner == self._hscroll_modifier_owner
-                        and self._hold_claim in (None, "hscroll")):
-                    v_delta = Quartz.CGEventGetIntegerValueField(
-                        cg_event, Quartz.kCGScrollWheelEventFixedPtDeltaAxis1
-                    ) / 65536.0
-                    if v_delta != 0:
-                        self._hold_claim = "hscroll"
-                        # An active scroll proves the button is still held, so
-                        # refresh the press time: otherwise a hold+scroll lasting
-                        # longer than gesture_timeout_ms would be aborted as a
-                        # dropped button-up on the next mouse move (review F2).
-                        self._gesture_press_at = time.monotonic()
-                        # Apply speed, default direction, and the dedicated invert
-                        # toggle (issue 011). Reuses _inject_hscroll's scale arg.
-                        scale = self.hscroll_modifier_speed * _HSCROLL_DIRECTION_SIGN
-                        if self.hscroll_modifier_invert:
-                            scale = -scale
-                        self._inject_hscroll(v_delta, scale=scale)
-                        return None  # swallow the original vertical scroll
                 if self.debug_mode and self._debug_callback:
                     try:
                         v_delta = (

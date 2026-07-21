@@ -487,14 +487,17 @@ class HScrollGuardrailTests(unittest.TestCase):
         self._scroll(v=2.0)
         self.assertEqual(self.hook._hold_claim, "hscroll")
 
-    def test_f1_half_speed_accumulates_instead_of_dropping(self):
-        """Review F1: at speed 0.5, two 1.0 notches must produce one horizontal
-        step via a residual accumulator -- not zero (int(round(0.5))==0)."""
+    def test_f1_half_speed_still_scrolls_no_dead_zone(self):
+        """Review F1: at speed 0.5 a normal notch must still scroll horizontally --
+        the fixed-point delta preserves the fraction, so there's no int-rounding
+        dead-zone (int(round(0.5))==0 would have dropped it)."""
         self.hook.hscroll_modifier_speed = 0.5
         self._down(_BACK_BTN)
-        self._scroll(v=1.0)                        # residual 0.5 -> nothing yet
-        self._scroll(v=1.0)                        # residual 1.0 -> one step
+        self._scroll(v=1.0)
         self.assertEqual(len(self.quartz.posted_events), 1)
+        ev = self.quartz.posted_events[-1]
+        self.assertNotEqual(
+            ev.fields.get(self.quartz.kCGScrollWheelEventFixedPtDeltaAxis2, 0), 0)
 
     def test_f2_active_scroll_keeps_hold_alive_past_timeout(self):
         """Review F2: an active diverted scroll refreshes the hold so a later
@@ -580,8 +583,10 @@ class HScrollDirectionSpeedTests(unittest.TestCase):
         return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
 
     def _injected_h(self):
-        # signature (source, units, wheelCount, wheel1_vertical, wheel2_horizontal)
-        return self.quartz.scroll_calls[-1][4]
+        # The injected horizontal delta now lives on the posted event's axis-2
+        # fixed-point field (set by _post_hscroll_from_vertical), in wheel units.
+        ev = self.quartz.posted_events[-1]
+        return ev.fields.get(self.quartz.kCGScrollWheelEventFixedPtDeltaAxis2, 0) / 65536.0
 
     def test_default_speed_is_unity(self):
         self._down(_BACK_BTN)
