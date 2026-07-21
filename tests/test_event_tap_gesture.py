@@ -389,11 +389,32 @@ class HScrollHoldModifierTests(unittest.TestCase):
         ev.fields[self.quartz.kCGMouseEventDeltaY] = dy
         return self.hook._event_tap_callback(None, self.quartz.kCGEventMouseMoved, ev, None)
 
-    def _scroll(self, v=0.0, h=0.0):
+    def _scroll(self, v=0.0, h=0.0, continuous=0):
         ev = _FakeCGEvent()
+        ev.fields[88] = continuous  # kCGScrollWheelEventIsContinuous
         ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis1] = int(v * 65536)
         ev.fields[self.quartz.kCGScrollWheelEventFixedPtDeltaAxis2] = int(h * 65536)
         return self.hook._event_tap_callback(None, self.quartz.kCGEventScrollWheel, ev, None)
+
+    def test_continuous_hires_wheel_still_diverts(self):
+        """Regression (hardware bug): the 2S hi-res wheel reports is_continuous=1.
+        With ignore_trackpad on, the hold-modifier diversion must STILL fire --
+        it runs before the trackpad guard. If someone moves it back after the
+        guard, this fails."""
+        self.assertTrue(self.hook.ignore_trackpad)          # the guard is active
+        self._down(_BACK_BTN)
+        result = self._scroll(v=2.0, continuous=1)
+        self.assertIsNone(result)                           # swallowed = diverted
+        self.assertEqual(self.hook._hold_claim, "hscroll")
+        self.assertEqual(len(self.quartz.posted_events), 1)  # hscroll injected
+
+    def test_continuous_scroll_without_hold_is_passed_through(self):
+        """The fix must not change normal scrolling: a continuous (trackpad-like)
+        scroll with no modifier held is still passed through by the guard."""
+        posted = len(self.quartz.posted_events)
+        result = self._scroll(v=2.0, continuous=1)          # nothing held
+        self.assertIsNotNone(result)                        # passed through
+        self.assertEqual(len(self.quartz.posted_events), posted)  # nothing injected
 
     def test_hold_modifier_then_wheel_injects_horizontal_and_swallows(self):
         self._down(_BACK_BTN)
