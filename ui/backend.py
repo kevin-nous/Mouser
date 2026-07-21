@@ -635,6 +635,24 @@ class Backend(QObject):
         self.settingsChanged.emit()
 
     @Property(str, notify=settingsChanged)
+    def hscrollModifierOwner(self):
+        """Which event-tap gesture-owner button (back/forward/middle) is the
+        horizontal-scroll hold modifier, or "" for none. Single-owner: enabling
+        it on one button clears any other."""
+        return str(self._cfg.get("settings", {}).get("hscroll_modifier_owner", ""))
+
+    @Slot(str)
+    def setHscrollModifierOwner(self, owner):
+        owner = str(owner)
+        if self.hscrollModifierOwner == owner:
+            return
+        self._cfg.setdefault("settings", {})["hscroll_modifier_owner"] = owner
+        save_config(self._cfg)
+        if self._engine:
+            self._engine.reload_mappings()
+        self.settingsChanged.emit()
+
+    @Property(str, notify=settingsChanged)
     def appearanceMode(self):
         mode = self._cfg.get("settings", {}).get("appearance_mode", "system")
         return mode if mode in {"system", "light", "dark"} else "system"

@@ -62,6 +62,8 @@ _TRANSLATIONS = {
         "mouse.swipe_actions": "SWIPE ACTIONS",
         "mouse.tap_action": "TAP ACTION",
         "mouse.tap_label": "Tap",
+        "mouse.hscroll_hold": "Horizontal scroll on hold",
+        "mouse.hscroll_hold_desc": "Hold this button and roll the wheel to scroll sideways. A tap still runs the button's normal action.",
         "mouse.swipe_left": "Swipe left",
         "mouse.swipe_right": "Swipe right",
         "mouse.swipe_up": "Swipe up",

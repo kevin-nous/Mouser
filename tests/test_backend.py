@@ -142,6 +142,16 @@ class BackendHScrollModifierTests(unittest.TestCase):
         self.assertTrue(backend.hscrollModifierInvert)
         self.assertTrue(backend._cfg["settings"]["hscroll_modifier_invert"])
 
+    def test_modifier_owner_get_set_and_clear(self):
+        backend = self._make_backend()
+        self.assertEqual(backend.hscrollModifierOwner, "")     # default: no modifier
+        backend.setHscrollModifierOwner("back")
+        self.assertEqual(backend.hscrollModifierOwner, "back")
+        self.assertEqual(backend._cfg["settings"]["hscroll_modifier_owner"], "back")
+        backend.setHscrollModifierOwner("")                    # toggling off
+        self.assertEqual(backend.hscrollModifierOwner, "")
+        self.assertEqual(backend._cfg["settings"]["hscroll_modifier_owner"], "")
+
 
 class BackendDeviceLayoutTests(unittest.TestCase):
     def _make_backend(self, engine=None, root_dir=None, cfg=None):

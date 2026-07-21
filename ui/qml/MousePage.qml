@@ -1898,6 +1898,41 @@ Item {
                                     }
                                 }
 
+                                // Horizontal-scroll hold modifier (macOS): make THIS
+                                // button the hold modifier without consuming its tap.
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 12
+                                    visible: backend.isMacOS && selectedGestureOwnerEligible
+
+                                    Column {
+                                        Layout.fillWidth: true
+                                        spacing: 3
+                                        Text {
+                                            text: s["mouse.hscroll_hold"] || "Horizontal scroll on hold"
+                                            font { family: uiState.fontFamily; pixelSize: 13; bold: true }
+                                            color: theme.textPrimary
+                                        }
+                                        Text {
+                                            width: parent.width
+                                            wrapMode: Text.WordWrap
+                                            text: s["mouse.hscroll_hold_desc"]
+                                                  || "Hold this button and roll the wheel to scroll sideways. A tap still runs the button's normal action."
+                                            font { family: uiState.fontFamily; pixelSize: 11 }
+                                            color: theme.textSecondary
+                                        }
+                                    }
+
+                                    Switch {
+                                        checked: backend.hscrollModifierOwner === selectedGestureOwner
+                                        text: checked ? s["mouse.on"] : s["mouse.off"]
+                                        Material.accent: theme.accent
+                                        Accessible.name: s["mouse.hscroll_hold"] || "Horizontal scroll on hold"
+                                        onToggled: backend.setHscrollModifierOwner(
+                                            checked ? selectedGestureOwner : "")
+                                    }
+                                }
+
                                 Text {
                                     visible: selectedGestureOwner === "middle" && selectedGestureOwnerEnabled
                                     width: parent.width
