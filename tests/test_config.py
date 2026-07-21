@@ -89,6 +89,28 @@ class ConfigCorruptRecoveryTests(unittest.TestCase):
             with open(os.path.join(d, backups[0])) as f:
                 self.assertIn("NOT valid json", f.read())      # exact bytes kept
 
+    def test_save_backs_up_previous_config_before_overwriting(self):
+        """Every save preserves the prior config as .prev, so a bad/racy save
+        (e.g. defaults written over a good config) is always one restore away."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.json")
+            with patch.object(config, "CONFIG_FILE", path), \
+                 patch.object(config, "CONFIG_DIR", d):
+                config.save_config({"marker": "OLD-GOOD"})
+                config.save_config({"marker": "NEW-CLOBBER"})
+            with open(path) as f:
+                self.assertIn("NEW-CLOBBER", f.read())          # live = newest
+            with open(path + ".prev") as f:
+                self.assertIn("OLD-GOOD", f.read())             # prev = recoverable
+
+    def test_save_makes_no_prev_on_first_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.json")
+            with patch.object(config, "CONFIG_FILE", path), \
+                 patch.object(config, "CONFIG_DIR", d):
+                config.save_config({"marker": "FIRST"})
+            self.assertFalse(os.path.exists(path + ".prev"))
+
     def test_valid_config_makes_no_corrupt_backup(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "config.json")

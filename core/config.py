@@ -265,6 +265,15 @@ def save_config(cfg):
             os.fsync(f.fileno())
         if sys.platform != "win32":
             os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+        # Keep a one-deep backup of the config we're about to replace, so a bad or
+        # racy write (e.g. defaults clobbering a good config) is always one restore
+        # away at config.json.prev.
+        if os.path.exists(CONFIG_FILE):
+            try:
+                import shutil
+                shutil.copy2(CONFIG_FILE, f"{CONFIG_FILE}.prev")
+            except Exception as e:
+                print(f"[Config] Could not snapshot previous config: {e}")
         os.replace(tmp_path, CONFIG_FILE)
     except BaseException:
         try:
