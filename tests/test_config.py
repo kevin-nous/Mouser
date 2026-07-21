@@ -37,6 +37,15 @@ class HScrollModifierSettingsTests(unittest.TestCase):
         s = config.DEFAULT_CONFIG["settings"]
         self.assertEqual(s["hscroll_modifier_speed"], 1.0)
         self.assertFalse(s["hscroll_modifier_invert"])
+        self.assertEqual(s["hscroll_modifier_owner"], "")  # "" = no modifier button
+
+    def test_migrate_adds_hscroll_modifier_owner_default(self):
+        migrated = config._migrate(self._legacy())
+        self.assertEqual(migrated["settings"]["hscroll_modifier_owner"], "")
+
+    def test_migrate_preserves_hscroll_modifier_owner(self):
+        migrated = config._migrate(self._legacy({"hscroll_modifier_owner": "back"}))
+        self.assertEqual(migrated["settings"]["hscroll_modifier_owner"], "back")
 
     def test_migrate_adds_hscroll_modifier_defaults(self):
         migrated = config._migrate(self._legacy())

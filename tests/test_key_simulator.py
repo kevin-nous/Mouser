@@ -15,13 +15,11 @@ class KeySimulatorActionTests(unittest.TestCase):
         self.assertIn("space_right", key_simulator.ACTIONS)
 
     @unittest.skipUnless(sys.platform == "darwin", "horizontal-scroll hold modifier is macOS-only")
-    def test_horizontal_scroll_hold_is_registered_scroll_action(self):
-        """Issue 009 — the modifier is a selectable Scroll-category action on macOS
-        (engine-handled, no keystrokes)."""
-        self.assertIn("horizontal_scroll_hold", key_simulator.ACTIONS)
-        entry = key_simulator.ACTIONS["horizontal_scroll_hold"]
-        self.assertEqual(entry["category"], "Scroll")
-        self.assertEqual(entry["keys"], [])
+    def test_horizontal_scroll_hold_is_not_a_bindable_action(self):
+        """The hold modifier is designated via settings.hscroll_modifier_owner, NOT
+        a bindable action -- so a tap keeps the button's own action. It must not
+        appear as an action (that would be a dead 'does nothing' option)."""
+        self.assertNotIn("horizontal_scroll_hold", key_simulator.ACTIONS)
         self.assertEqual(key_simulator.ACTIONS["space_left"]["label"], "Previous Desktop")
         self.assertEqual(key_simulator.ACTIONS["space_right"]["label"], "Next Desktop")
 

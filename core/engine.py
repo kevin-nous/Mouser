@@ -31,15 +31,6 @@ HSCROLL_ACTION_COOLDOWN_S = 0.35
 HSCROLL_VOLUME_COOLDOWN_S = 0.06
 _VOLUME_ACTIONS = {"volume_up", "volume_down"}
 
-# Config button-mapping key -> event-tap gesture owner name, for resolving which
-# button is bound to the horizontal_scroll_hold modifier action (issue 010).
-_HSCROLL_MODIFIER_BTN_TO_OWNER = {
-    "xbutton1": "back",
-    "xbutton2": "forward",
-    "middle": "middle",
-}
-
-
 class Engine:
     """
     Core logic: reads config, installs the mouse hook,
@@ -146,17 +137,15 @@ class Engine:
         }
 
     def _active_hscroll_modifier_owner(self, cfg, settings):
-        """The owner button (back/forward/middle) bound to horizontal_scroll_hold
-        AND able to host an event-tap owner hold on the connected device, or None.
-        Unlike _active_gesture_owners this is NOT gated on the slide-gesture enable
-        toggle -- the hold modifier is its own opt-in feature (issue 010)."""
-        mappings = get_active_mappings(cfg)
-        owner = next(
-            (owner_name for btn_key, owner_name in _HSCROLL_MODIFIER_BTN_TO_OWNER.items()
-             if mappings.get(btn_key) == "horizontal_scroll_hold"),
-            None,
-        )
-        if owner is None:
+        """The event-tap owner button (back/forward/middle) designated as the
+        horizontal-scroll hold modifier via settings.hscroll_modifier_owner, if it
+        can host an event-tap owner hold on the connected device -- else None.
+
+        Decoupled from the button's action mapping (issue 013 follow-up): a tap
+        still runs the button's own bound action; only holding it triggers hscroll.
+        Not gated on the slide-gesture enable toggle -- it's its own opt-in."""
+        owner = settings.get("hscroll_modifier_owner") or None
+        if owner not in BUTTON_GESTURE_OWNERS:
             return None
         device = getattr(self, "connected_device", None)
         device_buttons = getattr(device, "supported_buttons", None) if device else None

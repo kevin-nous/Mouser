@@ -162,6 +162,10 @@ DEFAULT_CONFIG = {
         # invert toggle independent of invert_hscroll (which inverts tilt input).
         "hscroll_modifier_speed": 1.0,
         "hscroll_modifier_invert": False,
+        # Which event-tap gesture owner button (back/forward/middle), if any, acts
+        # as the hold modifier. Separate from the button's action mapping so a tap
+        # still runs the button's normal action ("" = no modifier button).
+        "hscroll_modifier_owner": "",
         "appearance_mode": "system",
         "debug_mode": False,
         "device_layout_overrides": {},
@@ -431,6 +435,7 @@ def _migrate(cfg):
     )
     cfg["settings"].setdefault("hscroll_modifier_speed", 1.0)
     cfg["settings"].setdefault("hscroll_modifier_invert", False)
+    cfg["settings"].setdefault("hscroll_modifier_owner", "")
 
     # Always migrate old wmplayer.exe → Microsoft.Media.Player.exe in profile apps
     for pdata in cfg.get("profiles", {}).values():

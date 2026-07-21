@@ -160,19 +160,43 @@ class EngineHorizontalScrollTests(unittest.TestCase):
         ):
             return Engine()
 
-    def test_setup_hooks_wires_hscroll_modifier_owner_when_bound(self):
-        """Issue 010 engine wiring — a button bound to horizontal_scroll_hold on a
-        device that hosts that event-tap owner becomes the modifier AND is armed."""
+    def _owner_device(self):
+        return SimpleNamespace(supported_buttons=frozenset(
+            {"gesture_back_left", "gesture_back_right",
+             "gesture_back_up", "gesture_back_down"}))
+
+    def test_setup_hooks_wires_modifier_from_setting_and_arms_owner(self):
+        """The modifier owner comes from settings.hscroll_modifier_owner (not the
+        action mapping) on a device that hosts that event-tap owner, and is armed."""
         engine = self._make_engine()
-        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "horizontal_scroll_hold"
-        engine.hook.connected_device = SimpleNamespace(
-            supported_buttons=frozenset(
-                {"gesture_back_left", "gesture_back_right",
-                 "gesture_back_up", "gesture_back_down"}))
+        engine.cfg["settings"]["hscroll_modifier_owner"] = "back"
+        engine.hook.connected_device = self._owner_device()
         engine._setup_hooks()
         self.assertEqual(engine.hook._hscroll_modifier_owner_arg, "back")
-        # must also be armed as an owner, else the hold never enters the kernel
         self.assertIn("back", engine.hook._gesture_config["owners"])
+
+    def test_modifier_preserves_the_buttons_tap_action(self):
+        """The whole point of the decouple: the modifier owner is set while the
+        button keeps a normal action (tap), which is left untouched."""
+        engine = self._make_engine()
+        engine.cfg["settings"]["hscroll_modifier_owner"] = "back"
+        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "mouse_back_click"
+        engine.hook.connected_device = self._owner_device()
+        engine._setup_hooks()
+        self.assertEqual(engine.hook._hscroll_modifier_owner_arg, "back")   # hold works
+        # ...and the tap action is untouched
+        self.assertEqual(
+            engine.cfg["profiles"]["default"]["mappings"]["xbutton1"], "mouse_back_click")
+
+    def test_action_binding_alone_no_longer_triggers_modifier(self):
+        """The old mechanism is gone: binding horizontal_scroll_hold as an action,
+        without the setting, does NOT make the button a modifier."""
+        engine = self._make_engine()
+        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "horizontal_scroll_hold"
+        engine.cfg["settings"]["hscroll_modifier_owner"] = ""
+        engine.hook.connected_device = self._owner_device()
+        engine._setup_hooks()
+        self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
 
     def test_setup_hooks_applies_hscroll_modifier_speed_and_invert(self):
         """Issue 011 — the speed factor and dedicated invert toggle flow from
@@ -184,17 +208,17 @@ class EngineHorizontalScrollTests(unittest.TestCase):
         self.assertEqual(engine.hook.hscroll_modifier_speed, 2.5)
         self.assertTrue(engine.hook.hscroll_modifier_invert)
 
-    def test_setup_hooks_no_hscroll_modifier_when_unbound(self):
+    def test_setup_hooks_no_hscroll_modifier_when_owner_unset(self):
         engine = self._make_engine()
-        engine.hook.connected_device = SimpleNamespace(
-            supported_buttons=frozenset({"gesture_back_left"}))
+        engine.cfg["settings"]["hscroll_modifier_owner"] = ""
+        engine.hook.connected_device = self._owner_device()
         engine._setup_hooks()
         self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
 
     def test_setup_hooks_no_hscroll_modifier_when_device_ineligible(self):
-        """Bound, but the device can't host an event-tap owner there → not armed."""
+        """Owner set, but the device can't host an event-tap owner there → not armed."""
         engine = self._make_engine()
-        engine.cfg["profiles"]["default"]["mappings"]["xbutton1"] = "horizontal_scroll_hold"
+        engine.cfg["settings"]["hscroll_modifier_owner"] = "back"
         engine.hook.connected_device = SimpleNamespace(supported_buttons=frozenset({"middle"}))
         engine._setup_hooks()
         self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
