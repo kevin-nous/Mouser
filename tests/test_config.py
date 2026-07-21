@@ -71,6 +71,37 @@ class HScrollModifierSettingsTests(unittest.TestCase):
         self.assertTrue(reloaded["settings"]["hscroll_modifier_invert"])
 
 
+class ConfigCorruptRecoveryTests(unittest.TestCase):
+    """A corrupt/unreadable config must not be silently discarded -- back it up
+    so the user's mappings can be recovered instead of clobbered by defaults."""
+
+    def test_unreadable_config_is_backed_up_not_discarded(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.json")
+            with open(path, "w") as f:
+                f.write("{ this is NOT valid json ")          # corrupt on disk
+            with patch.object(config, "CONFIG_FILE", path), \
+                 patch.object(config, "CONFIG_DIR", d):
+                cfg = config.load_config()
+            self.assertIn("profiles", cfg)                     # falls back to defaults
+            backups = [n for n in os.listdir(d) if n.startswith("config.json.corrupt-")]
+            self.assertEqual(len(backups), 1)                  # original preserved
+            with open(os.path.join(d, backups[0])) as f:
+                self.assertIn("NOT valid json", f.read())      # exact bytes kept
+
+    def test_valid_config_makes_no_corrupt_backup(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.json")
+            with patch.object(config, "CONFIG_FILE", path), \
+                 patch.object(config, "CONFIG_DIR", d):
+                config.save_config({"version": 9, "active_profile": "default",
+                                    "profiles": {"default": {"mappings": {}}},
+                                    "settings": {}})
+                config.load_config()
+            backups = [n for n in os.listdir(d) if n.startswith("config.json.corrupt-")]
+            self.assertEqual(backups, [])
+
+
 class ConfigMigrationTests(unittest.TestCase):
     def test_migrate_v1_config_adds_profile_apps_and_gesture_defaults(self):
         legacy = {

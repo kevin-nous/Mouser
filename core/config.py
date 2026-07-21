@@ -235,7 +235,23 @@ def load_config():
             return cfg
         except Exception as e:
             print(f"[Config] Error loading config: {e}")
+            _backup_unreadable_config()
     return json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+
+
+def _backup_unreadable_config():
+    """Preserve an existing-but-unreadable config before load_config falls back to
+    defaults. Without this, the fallback defaults get saved over the user's file on
+    the next change and their mappings are lost for good. Copies to
+    config.json.corrupt-<timestamp> so it can always be recovered."""
+    try:
+        import shutil
+        import time
+        backup = f"{CONFIG_FILE}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        shutil.copy2(CONFIG_FILE, backup)
+        print(f"[Config] Backed up unreadable config to {backup}")
+    except Exception as e:
+        print(f"[Config] Could not back up unreadable config: {e}")
 
 
 def save_config(cfg):
