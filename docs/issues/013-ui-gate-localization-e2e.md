@@ -1,7 +1,9 @@
 ---
 id: 013
 title: UI surface + macOS/device gate + localization + hardware E2E
-status: ready
+status: shipped
+shipped_at: 2026-07-21
+shipped_commit: 5cbc28be5452
 depends_on: [009, 011, 012]
 effort: L
 # status transitions owned by /cc:build (§ Closing the Issue)
@@ -9,7 +11,16 @@ effort: L
 
 # UI surface + macOS/device gate + localization + hardware E2E
 
-> **Build status (2026-07-20): PARTIAL — status stays `ready`.**
+> **Closed 2026-07-21.** Hardware E2E passed on a real MX Anywhere 2S — hold
+> Back + wheel scrolls horizontally, tap Back still goes Back.
+> `_HSCROLL_DIRECTION_SIGN` calibrated to -1 (wheel-up → content-left). Shipped:
+> backend gate + speed/invert settings, the invert toggle, the per-button
+> "Horizontal scroll on hold" **owner toggle** (5cbc28be), localization, and two
+> hardware-only fixes (trackpad-guard bypass + field-copy injection, commit
+> 4533ac3) with regression tests. Only optional polish left: a speed-factor
+> *slider* (the setter/property already exist).
+>
+> Original partial note (2026-07-20):
 > Done + tested: backend `hscrollModifierEligible` gate, `hscrollModifierSpeed`/
 > `hscrollModifierInvert` properties + persisting setters (5 backend tests); the
 > invert toggle in `ui/qml/ScrollPage.qml` (gated, offscreen-compile-validated);
