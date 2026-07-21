@@ -1912,6 +1912,51 @@ Item {
                                     spacing: 14
                                     visible: selectedGestureOwnerEnabled
 
+                                    // Tap action: settable here because the base
+                                    // action grid is hidden while gesture mode is on.
+                                    // Bound to the same base mapping the grid writes.
+                                    Text {
+                                        text: s["mouse.tap_action"] || "Tap action"
+                                        font { family: uiState.fontFamily; pixelSize: 11;
+                                               capitalization: Font.AllUppercase; letterSpacing: 1 }
+                                        color: theme.textDim
+                                    }
+
+                                    RowLayout {
+                                        width: parent.width
+                                        spacing: 12
+
+                                        Text {
+                                            text: s["mouse.tap_label"] || "Tap"
+                                            Layout.preferredWidth: 100
+                                            font { family: uiState.fontFamily; pixelSize: 12 }
+                                            color: theme.textPrimary
+                                        }
+
+                                        ComboBox {
+                                            Layout.fillWidth: true
+                                            model: backend.allActions
+                                            textRole: "label"
+                                            delegate: actionComboDelegate
+                                            Material.accent: theme.accent
+                                            font { family: uiState.fontFamily; pixelSize: 11 }
+                                            currentIndex: actionIndexForId(selectedActionId)
+                                            displayText: isCustomAction(selectedActionId)
+                                                         ? customLabel(selectedActionId)
+                                                         : (lm.strings, lm.trAction(currentText))
+                                            onActivated: function(index) {
+                                                var aid = backend.allActions[index].id
+                                                if (aid === "__custom__") {
+                                                    keyCaptureDialog.open(selectedProfile, selectedButton)
+                                                    return
+                                                }
+                                                backend.setProfileMapping(
+                                                    selectedProfile, selectedButton, aid)
+                                                selectedActionId = aid
+                                            }
+                                        }
+                                    }
+
                                     Rectangle {
                                         width: parent.width
                                         height: 1

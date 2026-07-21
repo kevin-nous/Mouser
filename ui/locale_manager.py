@@ -60,6 +60,8 @@ _TRANSLATIONS = {
         "mouse.scroll_right": "SCROLL RIGHT",
         "mouse.tap_action": "TAP ACTION",
         "mouse.swipe_actions": "SWIPE ACTIONS",
+        "mouse.tap_action": "TAP ACTION",
+        "mouse.tap_label": "Tap",
         "mouse.swipe_left": "Swipe left",
         "mouse.swipe_right": "Swipe right",
         "mouse.swipe_up": "Swipe up",
