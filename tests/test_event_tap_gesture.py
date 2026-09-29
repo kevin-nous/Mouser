@@ -200,6 +200,10 @@ def _load_mouse_hook_macos():
 
     sentinel = object()
     saved = {k: sys.modules.get(k, sentinel) for k in ("objc", "Quartz", name)}
+    # import_module also rebinds the `core.mouse_hook_macos` package attribute;
+    # restore it too, or a later importlib.reload(core.mouse_hook) picks up the fake.
+    core_pkg = sys.modules["core"] if "core" in sys.modules else importlib.import_module("core")
+    saved_attr = getattr(core_pkg, "mouse_hook_macos", sentinel)
     sys.modules["objc"] = fake_objc
     sys.modules["Quartz"] = quartz
     sys.modules.pop(name, None)  # force a fresh, fake-backed import
@@ -212,8 +216,29 @@ def _load_mouse_hook_macos():
                 sys.modules.pop(key, None)
             else:
                 sys.modules[key] = value
+        if saved_attr is sentinel:
+            if hasattr(core_pkg, "mouse_hook_macos"):
+                delattr(core_pkg, "mouse_hook_macos")
+        else:
+            core_pkg.mouse_hook_macos = saved_attr
 
     return MouseHook, quartz
+
+
+class LoadMouseHookMacosIsolationTests(unittest.TestCase):
+    """_load_mouse_hook_macos() must leave no trace: importing the fake module
+    also rebinds the `core.mouse_hook_macos` package attribute, which a later
+    importlib.reload(core.mouse_hook) would pick up as a stale fake."""
+
+    def test_package_attribute_matches_sys_modules_after_load(self):
+        import core
+
+        sentinel = object()
+        before_attr = getattr(core, "mouse_hook_macos", sentinel)
+        before_mod = sys.modules.get("core.mouse_hook_macos", sentinel)
+        _load_mouse_hook_macos()
+        self.assertIs(getattr(core, "mouse_hook_macos", sentinel), before_attr)
+        self.assertIs(sys.modules.get("core.mouse_hook_macos", sentinel), before_mod)
 
 
 _MIDDLE_BTN = 2
