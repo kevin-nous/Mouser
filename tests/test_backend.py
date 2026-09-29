@@ -92,11 +92,17 @@ class _FakeEngine:
 class BackendHScrollModifierTests(unittest.TestCase):
     """Issue 013 — backend gate + settings for the horizontal-scroll hold modifier."""
 
+    def setUp(self):
+        # The setters under test call save_config after construction; keep it
+        # patched for the whole test or they overwrite the real user config.
+        save_patcher = patch("ui.backend.save_config")
+        save_patcher.start()
+        self.addCleanup(save_patcher.stop)
+
     def _make_backend(self, engine=None, cfg=None):
         loaded_config = copy.deepcopy(cfg or DEFAULT_CONFIG)
         with (
             patch("ui.backend.load_config", return_value=loaded_config),
-            patch("ui.backend.save_config"),
             patch("ui.backend.supports_login_startup", return_value=False),
         ):
             return Backend(engine=engine)

@@ -71,6 +71,22 @@ class HScrollModifierSettingsTests(unittest.TestCase):
         self.assertTrue(reloaded["settings"]["hscroll_modifier_invert"])
 
 
+class HScrollThresholdTypeTests(unittest.TestCase):
+    """A 2S tilt reports h=0.10 per click on macOS, so a sub-1 threshold is the
+    only way to fire a tilt action on every click. Type validation must keep it."""
+
+    def _validated(self, threshold):
+        cfg = json.loads(json.dumps(config.DEFAULT_CONFIG))
+        cfg["settings"]["hscroll_threshold"] = threshold
+        return config._validate_types(cfg, config.DEFAULT_CONFIG)["settings"]["hscroll_threshold"]
+
+    def test_fractional_threshold_survives_type_validation(self):
+        self.assertEqual(self._validated(0.1), 0.1)
+
+    def test_whole_number_threshold_survives_type_validation(self):
+        self.assertEqual(self._validated(2), 2)
+
+
 class ConfigCorruptRecoveryTests(unittest.TestCase):
     """A corrupt/unreadable config must not be silently discarded -- back it up
     so the user's mappings can be recovered instead of clobbered by defaults."""

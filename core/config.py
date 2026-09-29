@@ -491,6 +491,10 @@ def _merge_defaults(cfg, defaults):
     return cfg
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _validate_types(cfg, defaults, path=""):
     """Reset values whose type doesn't match the defaults template."""
     for key, default_val in defaults.items():
@@ -503,6 +507,8 @@ def _validate_types(cfg, defaults, path=""):
                 print(f"[Config] Type mismatch at {path}.{key}: "
                       f"expected dict, got {type(cfg[key]).__name__}")
                 cfg[key] = json.loads(json.dumps(default_val))
+        elif _is_number(default_val) and _is_number(cfg[key]):
+            continue  # int and float are interchangeable (e.g. a 0.1 threshold)
         elif not isinstance(cfg[key], type(default_val)):
             print(f"[Config] Type mismatch at {path}.{key}: "
                   f"expected {type(default_val).__name__}, "

@@ -43,7 +43,7 @@
   "settings": {
     "start_minimized": true,
     "start_at_login": false,
-    "hscroll_threshold": 1,
+    "hscroll_threshold": 0.1,
     "invert_hscroll": false,
     "invert_vscroll": true,
     "dpi": 1700,
