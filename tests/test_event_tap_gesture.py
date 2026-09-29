@@ -202,7 +202,7 @@ def _load_mouse_hook_macos():
     saved = {k: sys.modules.get(k, sentinel) for k in ("objc", "Quartz", name)}
     # import_module also rebinds the `core.mouse_hook_macos` package attribute;
     # restore it too, or a later importlib.reload(core.mouse_hook) picks up the fake.
-    core_pkg = sys.modules["core"] if "core" in sys.modules else importlib.import_module("core")
+    core_pkg = importlib.import_module("core")
     saved_attr = getattr(core_pkg, "mouse_hook_macos", sentinel)
     sys.modules["objc"] = fake_objc
     sys.modules["Quartz"] = quartz
