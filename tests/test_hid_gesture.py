@@ -943,13 +943,41 @@ class MacNativeHidLeakTests(unittest.TestCase):
         self.assertEqual(calls, [("close", 0x1234), ("release", 0x1234)])
         self.assertIsNone(dev._manager)
 
-    def test_failed_open_unwinds_through_close(self):
-        dev = hid_gesture._MacNativeHidDevice(0xB01A)
-        with patch.object(dev, "_open", side_effect=OSError("No IOHIDDevice")), \
-                patch.object(dev, "close") as close:
+    def test_failed_open_releases_everything_it_allocated(self):
+        # The real _open runs against fake IOKit/CF; IOHIDManagerOpen fails
+        # the way it does without Input Monitoring (0xE00002E2).
+        created = []
+
+        def new_handle(*_args):
+            created.append(0x100 + len(created))
+            return created[-1]
+
+        calls = []
+        with patch.object(hid_gesture, "_iokit") as iokit, \
+                patch.object(hid_gesture, "_cf") as cf:
+            cf.CFStringCreateWithCString.side_effect = new_handle
+            cf.CFNumberCreate.side_effect = new_handle
+            cf.CFDictionaryCreate.return_value = 0xD1C7
+            iokit.IOHIDManagerCreate.return_value = 0x5678
+            iokit.IOHIDManagerOpen.return_value = 0xE00002E2
+            iokit.IOHIDManagerClose.side_effect = (
+                lambda m, o: calls.append(("close", m))
+            )
+            cf.CFRelease.side_effect = lambda ref: calls.append(("release", ref))
+            dev = hid_gesture._MacNativeHidDevice(0xB01A)
             with self.assertRaises(OSError):
                 dev.open()
-        close.assert_called_once_with()
+            # Delete while the fakes are patched so __del__ cannot reach the
+            # real CFRelease with a fake handle.
+            del dev
+        released = [ref for kind, ref in calls if kind == "release"]
+        # VendorID/ProductID keys and their two numbers.
+        self.assertEqual(len(created), 4)
+        self.assertEqual(
+            sorted(released), sorted(created + [0xD1C7, 0x5678])
+        )
+        self.assertLess(calls.index(("close", 0x5678)),
+                        calls.index(("release", 0x5678)))
 
     def test_enumerate_closes_its_manager(self):
         with patch.object(hid_gesture, "_iokit") as iokit, \
@@ -965,21 +993,24 @@ class MacNativeHidLeakTests(unittest.TestCase):
 
     def test_read_pump_runs_inside_an_autorelease_pool(self):
         dev = hid_gesture._MacNativeHidDevice(0xB01A)
-        entered = []
+        order = []
 
         class _Pool:
             def __enter__(self):
-                entered.append(True)
+                order.append("pool opened")
                 return self
 
             def __exit__(self, *exc):
+                order.append("pool drained")
                 return False
 
         with patch.object(hid_gesture, "_AutoreleasePool", _Pool), \
                 patch.object(hid_gesture, "_cf") as cf:
+            cf.CFRunLoopRunInMode.side_effect = (
+                lambda *a: order.append("run loop")
+            )
             self.assertEqual(dev.read(64, timeout_ms=0), b"")
-        cf.CFRunLoopRunInMode.assert_called_once()
-        self.assertEqual(entered, [True])
+        self.assertEqual(order, ["pool opened", "run loop", "pool drained"])
 
 
 if __name__ == "__main__":
