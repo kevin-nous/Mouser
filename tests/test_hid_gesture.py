@@ -1,7 +1,9 @@
+import contextlib
 import importlib
 import os
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -804,6 +806,180 @@ class HidReconnectInvariantTests(unittest.TestCase):
         self.assertFalse(listener._extra_diverts[0x00C4]["held"])
         gesture_up.assert_called_once_with()
         extra_up.assert_called_once_with()
+
+
+class HidReconnectStormTests(unittest.TestCase):
+    """Regression coverage for the reconnect/probe throttle (upstream #238).
+
+    These exercise the platform-independent connect logic via the hidapi
+    fake. The IOKit manager leak fix is covered by MacNativeHidLeakTests."""
+
+    @staticmethod
+    def _printed_messages(print_mock):
+        return [
+            " ".join(str(arg) for arg in call.args)
+            for call in print_mock.call_args_list
+        ]
+
+    @staticmethod
+    def _info(pid, product, path):
+        return {
+            "product_id": pid,
+            "usage_page": 0xFF00,
+            "usage": 0x0001,
+            "transport": "Bluetooth Low Energy",
+            "source": "hidapi-enumerate",
+            "product_string": product,
+            "path": path,
+        }
+
+    @contextlib.contextmanager
+    def _connecting(self, listener, infos, fake_dev, *, reprog_found=True):
+        def fake_find_feature(feature_id, *args, **kwargs):
+            if reprog_found and feature_id == hid_gesture.FEAT_REPROG_V4:
+                return 0x10
+            return None
+
+        cms = (
+            patch.object(hid_gesture, "HIDAPI_OK", True),
+            patch.object(hid_gesture, "_BACKEND_PREFERENCE", "hidapi"),
+            patch.object(hid_gesture, "_HID_API_STYLE", "hidapi"),
+            patch.object(
+                hid_gesture,
+                "_hid",
+                SimpleNamespace(device=lambda: fake_dev),
+                create=True,
+            ),
+            patch.object(listener, "_vendor_hid_infos", return_value=infos),
+            patch.object(listener, "_find_feature", side_effect=fake_find_feature),
+            patch.object(listener, "_query_device_name", return_value=None),
+            patch.object(listener, "_discover_reprog_controls", return_value=[]),
+            patch.object(listener, "_divert", return_value=True),
+            patch.object(listener, "_divert_extras"),
+        )
+        with contextlib.ExitStack() as stack:
+            for cm in cms:
+                stack.enter_context(cm)
+            yield
+
+    def test_candidate_cooldown_key_is_hashable_and_distinct(self):
+        a = self._info(0xB034, "Iface A", b"/dev/hidraw-a")
+        b = self._info(0xB023, "Iface B", b"/dev/hidraw-b")
+        key_a = hid_gesture._candidate_cooldown_key(a)
+        self.assertEqual(key_a, hid_gesture._candidate_cooldown_key(a))
+        self.assertNotEqual(key_a, hid_gesture._candidate_cooldown_key(b))
+        self.assertIsInstance(hash(key_a), int)
+
+    def test_missing_reprog_records_cooldown(self):
+        listener = hid_gesture.HidGestureListener()
+        info = self._info(0xB034, "MX Master 3S", b"/dev/hidraw-x")
+        fake_dev = _FakeHidDevice()
+        with self._connecting(listener, [info], fake_dev, reprog_found=False):
+            self.assertFalse(listener._try_connect())
+        self.assertIn(
+            hid_gesture._candidate_cooldown_key(info),
+            listener._reprog_absent_until,
+        )
+
+    def test_cooled_interface_is_skipped_when_another_candidate_exists(self):
+        listener = hid_gesture.HidGestureListener()
+        # Name sorts the cooled interface first so the skip branch runs before
+        # the good interface connects.
+        cooled = self._info(0xB025, "AAA Cooled Iface", b"/dev/hidraw-cooled")
+        good = self._info(0xB034, "MX Master 3S", b"/dev/hidraw-good")
+        listener._reprog_absent_until[
+            hid_gesture._candidate_cooldown_key(cooled)
+        ] = time.monotonic() + 999
+        fake_dev = _FakeHidDevice()
+        with self._connecting(listener, [cooled, good], fake_dev):
+            with patch("builtins.print") as print_mock:
+                self.assertTrue(listener._try_connect())
+        fake_dev.open_path.assert_called_once_with(b"/dev/hidraw-good")
+        self.assertTrue(
+            any(
+                "Skipping recently-incompatible interface" in message
+                for message in self._printed_messages(print_mock)
+            )
+        )
+
+    def test_sole_cooled_interface_is_still_probed(self):
+        listener = hid_gesture.HidGestureListener()
+        only = self._info(0xB034, "MX Master 3S", b"/dev/hidraw-only")
+        listener._reprog_absent_until[
+            hid_gesture._candidate_cooldown_key(only)
+        ] = time.monotonic() + 999
+        fake_dev = _FakeHidDevice()
+        with self._connecting(listener, [only], fake_dev):
+            self.assertTrue(listener._try_connect())
+        fake_dev.open_path.assert_called_once_with(b"/dev/hidraw-only")
+
+    def test_interruptible_sleep_returns_immediately_when_stopped(self):
+        listener = hid_gesture.HidGestureListener()
+        listener._running = False
+        start = time.monotonic()
+        listener._interruptible_sleep(5)
+        self.assertLess(time.monotonic() - start, 0.5)
+
+
+@unittest.skipUnless(
+    sys.platform == "darwin" and getattr(hid_gesture, "_MAC_NATIVE_OK", False),
+    "macOS IOKit backend only",
+)
+class MacNativeHidLeakTests(unittest.TestCase):
+    """The IOKit manager is closed, not just released, and a failed open
+    unwinds everything it allocated (upstream #238, #240)."""
+
+    def test_close_closes_the_manager_before_releasing_it(self):
+        dev = hid_gesture._MacNativeHidDevice(0xB01A)
+        dev._manager = 0x1234
+        calls = []
+        with patch.object(hid_gesture, "_iokit") as iokit, \
+                patch.object(hid_gesture, "_cf") as cf:
+            iokit.IOHIDManagerClose.side_effect = (
+                lambda m, o: calls.append(("close", m))
+            )
+            cf.CFRelease.side_effect = lambda ref: calls.append(("release", ref))
+            dev.close()
+        self.assertEqual(calls, [("close", 0x1234), ("release", 0x1234)])
+        self.assertIsNone(dev._manager)
+
+    def test_failed_open_unwinds_through_close(self):
+        dev = hid_gesture._MacNativeHidDevice(0xB01A)
+        with patch.object(dev, "_open", side_effect=OSError("No IOHIDDevice")), \
+                patch.object(dev, "close") as close:
+            with self.assertRaises(OSError):
+                dev.open()
+        close.assert_called_once_with()
+
+    def test_enumerate_closes_its_manager(self):
+        with patch.object(hid_gesture, "_iokit") as iokit, \
+                patch.object(hid_gesture, "_cf") as cf:
+            iokit.IOHIDManagerCreate.return_value = 0x5678
+            iokit.IOHIDManagerOpen.return_value = 0
+            iokit.IOHIDManagerCopyDevices.return_value = None
+            cf.CFStringCreateWithCString.return_value = 0x1
+            cf.CFNumberCreate.return_value = 0x2
+            cf.CFDictionaryCreate.return_value = 0x3
+            hid_gesture._MacNativeHidDevice.enumerate_infos()
+        iokit.IOHIDManagerClose.assert_called_once_with(0x5678, 0)
+
+    def test_read_pump_runs_inside_an_autorelease_pool(self):
+        dev = hid_gesture._MacNativeHidDevice(0xB01A)
+        entered = []
+
+        class _Pool:
+            def __enter__(self):
+                entered.append(True)
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with patch.object(hid_gesture, "_AutoreleasePool", _Pool), \
+                patch.object(hid_gesture, "_cf") as cf:
+            self.assertEqual(dev.read(64, timeout_ms=0), b"")
+        cf.CFRunLoopRunInMode.assert_called_once()
+        self.assertEqual(entered, [True])
 
 
 if __name__ == "__main__":

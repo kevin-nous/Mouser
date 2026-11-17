@@ -11,6 +11,7 @@ Requires:  pip install hidapi
 Falls back gracefully if the package or device are unavailable.
 """
 
+import functools
 import os
 import stat
 import sys
@@ -176,6 +177,8 @@ if sys.platform == "darwin":
         _iokit.IOHIDManagerSetDeviceMatching.argtypes = [c_void_p, c_void_p]
         _iokit.IOHIDManagerOpen.argtypes = [c_void_p, c_int]
         _iokit.IOHIDManagerOpen.restype = c_int
+        _iokit.IOHIDManagerClose.argtypes = [c_void_p, c_int]
+        _iokit.IOHIDManagerClose.restype = c_int
         _iokit.IOHIDManagerCopyDevices.argtypes = [c_void_p]
         _iokit.IOHIDManagerCopyDevices.restype = c_void_p
 
@@ -214,6 +217,52 @@ if sys.platform == "darwin":
         _K_IOHID_REPORT_TYPE_INPUT = 0
         _K_IOHID_REPORT_TYPE_OUTPUT = 1
         _K_CF_RUN_LOOP_DEFAULT_MODE = c_void_p.in_dll(_cf, "kCFRunLoopDefaultMode")
+
+        # NSAutoreleasePool via libobjc: the IOHID paths below run on plain
+        # Python threads (HID listener, reconnect loop, battery/smart-shift
+        # pollers) that never drain an autorelease pool, so autoreleased
+        # Foundation/IOKit temporaries -- most visibly the HIDEvent objects
+        # produced while CFRunLoopRunInMode delivers input reports -- would
+        # otherwise accumulate for the process lifetime (upstream #233, #238,
+        # #247).
+        try:
+            _objc_rt = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+            _objc_rt.objc_getClass.argtypes = [ctypes.c_char_p]
+            _objc_rt.objc_getClass.restype = c_void_p
+            _objc_rt.sel_registerName.argtypes = [ctypes.c_char_p]
+            _objc_rt.sel_registerName.restype = c_void_p
+            _objc_rt.objc_msgSend.argtypes = [c_void_p, c_void_p]
+            _objc_rt.objc_msgSend.restype = c_void_p
+            _NS_POOL_CLASS = _objc_rt.objc_getClass(b"NSAutoreleasePool")
+            _SEL_NEW = _objc_rt.sel_registerName(b"new")
+            _SEL_DRAIN = _objc_rt.sel_registerName(b"drain")
+            _OBJC_POOL_OK = bool(_NS_POOL_CLASS and _SEL_NEW and _SEL_DRAIN)
+        except Exception as _pool_exc:
+            print(f"[HidGesture] NSAutoreleasePool unavailable: {_pool_exc}")
+            _OBJC_POOL_OK = False
+
+        class _AutoreleasePool:
+            __slots__ = ("_pool",)
+
+            def __enter__(self):
+                self._pool = (
+                    _objc_rt.objc_msgSend(_NS_POOL_CLASS, _SEL_NEW)
+                    if _OBJC_POOL_OK else None
+                )
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                pool, self._pool = self._pool, None
+                if pool:
+                    _objc_rt.objc_msgSend(pool, _SEL_DRAIN)
+                return False
+
+        def _pooled(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                with _AutoreleasePool():
+                    return fn(*args, **kwargs)
+            return wrapper
 
         _MAC_NATIVE_OK = True
     except Exception as exc:
@@ -302,7 +351,25 @@ if _MAC_NATIVE_OK:
             finally:
                 _cf.CFRelease(key)
 
+        @staticmethod
+        def _close_manager(manager):
+            """Balance IOHIDManagerOpen before releasing the CF wrapper.
+
+            IOHIDManagerClose releases the IOKit user-client (its Mach ports)
+            and the enclosed-device opens; a bare CFRelease does not, so the
+            manager object and its Mach ports leak on every open (upstream
+            #238: tens of thousands of live IOHIDManager objects after a day
+            of reconnect churn)."""
+            if not manager:
+                return
+            try:
+                _iokit.IOHIDManagerClose(manager, 0)
+            except Exception:
+                pass
+            _cf.CFRelease(manager)
+
         @classmethod
+        @_pooled
         def enumerate_infos(cls):
             infos = []
             manager = None
@@ -364,12 +431,25 @@ if _MAC_NATIVE_OK:
                 if matching:
                     _cf.CFRelease(matching)
                 if manager:
-                    _cf.CFRelease(manager)
+                    cls._close_manager(manager)
                 for item in matching_refs:
                     _cf.CFRelease(item)
             return infos
 
+        @_pooled
         def open(self):
+            """Exception-safe open. On any partial failure, release every
+            CoreFoundation object allocated so far so a failed open cannot
+            leak the manager, matching dict, matching refs, or the retained
+            device. ``close()`` guards each field, so a failed open is safe
+            to unwind through it (upstream #238)."""
+            try:
+                self._open()
+            except Exception:
+                self.close()
+                raise
+
+        def _open(self):
             keys = [
                 self._cfstring("VendorID"),
                 self._cfstring("ProductID"),
@@ -444,6 +524,7 @@ if _MAC_NATIVE_OK:
                 parts.append(f'transport "{self._transport}"')
             return "No IOHIDDevice for " + " ".join(parts)
 
+        @_pooled
         def close(self):
             if self._device and self._run_loop:
                 try:
@@ -466,7 +547,7 @@ if _MAC_NATIVE_OK:
                 _cf.CFRelease(self._matching)
                 self._matching = None
             if self._manager:
-                _cf.CFRelease(self._manager)
+                self._close_manager(self._manager)
                 self._manager = None
             for item in self._matching_refs:
                 _cf.CFRelease(item)
@@ -479,6 +560,7 @@ if _MAC_NATIVE_OK:
         def set_nonblocking(self, _enabled):
             return None
 
+        @_pooled
         def write(self, buf):
             arr = (c_uint8 * len(buf))(*buf)
             res = _iokit.IOHIDDeviceSetReport(
@@ -522,17 +604,30 @@ if _MAC_NATIVE_OK:
                 else:
                     slice_seconds = 0.05
 
-                _cf.CFRunLoopRunInMode(
-                    _K_CF_RUN_LOOP_DEFAULT_MODE,
-                    slice_seconds,
-                    True,
-                )
+                # Pool per pump slice: input-report callbacks fire inside
+                # this call, and their per-report temporaries must not
+                # outlive the slice (upstream #247).
+                with _AutoreleasePool():
+                    _cf.CFRunLoopRunInMode(
+                        _K_CF_RUN_LOOP_DEFAULT_MODE,
+                        slice_seconds,
+                        True,
+                    )
                 try:
                     return self._report_queue.get_nowait()
                 except queue.Empty:
                     if deadline is not None:
                         continue
                     return b""
+
+        def __del__(self):
+            # Backstop: an instance discarded without an explicit close()
+            # must not leak IOKit resources. close() is idempotent; never
+            # raise from __del__.
+            try:
+                self.close()
+            except Exception:
+                pass
 
 # ── Constants ─────────────────────────────────────────────────────
 LOGI_VID       = 0x046D
@@ -704,10 +799,31 @@ def _format_cid(cid):
     return f"0x{cid:04X} ({name})" if name else f"0x{cid:04X}"
 
 
+def _candidate_cooldown_key(info) -> tuple:
+    """Hashable interface identity for the REPROG_V4-absent cooldown map."""
+    path = info.get("path") or b""
+    if isinstance(path, str):
+        path = path.encode("utf-8", errors="replace")
+    return (
+        int(info.get("product_id", 0) or 0),
+        int(info.get("usage_page", 0) or 0),
+        int(info.get("usage", 0) or 0),
+        info.get("transport") or "",
+        info.get("source") or "",
+        bytes(path),
+    )
+
+
 # ── Listener class ────────────────────────────────────────────────
 
 class HidGestureListener:
     """Background thread: diverts the gesture button and listens via HID++."""
+
+    # Cooldown before an interface that opened but exposed no REPROG_V4 is
+    # re-probed, so a stable set of incompatible interfaces is not re-scanned
+    # every pass during a reconnect storm. Bypassed when it is the only
+    # candidate so a woken device reconnects promptly (upstream #238).
+    _REPROG_ABSENT_COOLDOWN_S = 10.0
 
     def __init__(self, on_down=None, on_up=None, on_move=None,
                  on_connect=None, on_disconnect=None, extra_diverts=None):
@@ -744,6 +860,8 @@ class HidGestureListener:
         self._smart_shift_slot_lock = threading.Lock()
         self._smart_shift_event = threading.Event()
         self._reconnect_requested = False
+        # signature -> monotonic deadline; see _REPROG_ABSENT_COOLDOWN_S.
+        self._reprog_absent_until = {}
         self._pending_battery = None
         self._battery_result = None
         self._last_logged_battery = None
@@ -1698,7 +1816,31 @@ class HidGestureListener:
                   f"usage=0x{usage:04X} transport={transport or '-'} "
                   f"source={source} product={product} path={path or '-'}")
 
+        # REPROG_V4-absent cooldown (upstream #238): skip interfaces that
+        # recently opened but exposed no REPROG_V4, so a stable set of
+        # incompatible interfaces is not re-probed on every pass. Never skip
+        # when *all* candidates are cooling down, so a sole (e.g. just-woken)
+        # device is still probed; the connect backoff throttles that case.
+        now = time.monotonic()
+        self._reprog_absent_until = {
+            k: t for k, t in self._reprog_absent_until.items() if t > now
+        }
+        cooled = {
+            _candidate_cooldown_key(info)
+            for info in infos
+            if _candidate_cooldown_key(info) in self._reprog_absent_until
+        }
+        skip_cooled = bool(cooled) and len(cooled) < len(infos)
+
         for info in infos:
+            cand_key = _candidate_cooldown_key(info)
+            if skip_cooled and cand_key in cooled:
+                print(
+                    "[HidGesture] Skipping recently-incompatible interface "
+                    f"PID=0x{int(info.get('product_id', 0) or 0):04X} "
+                    "(no REPROG_V4; cooling down)"
+                )
+                continue
             pid = info.get("product_id", 0)
             up = info.get("usage_page", 0)
             usage = info.get("usage", 0)
@@ -1882,6 +2024,7 @@ class HidGestureListener:
                                 "device_path": opened_path,
                             },
                         )
+                        self._reprog_absent_until.pop(cand_key, None)
                         return True
                     continue     # divert failed — try next receiver slot
             if not reprog_found:
@@ -1890,6 +2033,9 @@ class HidGestureListener:
                     f"on tested devIdx values PID=0x{int(pid or 0):04X} "
                     f"UP=0x{opened_up:04X} usage=0x{opened_usage:04X} "
                     f"transport={opened_transport or '-'} source={source}"
+                )
+                self._reprog_absent_until[cand_key] = (
+                    time.monotonic() + self._REPROG_ABSENT_COOLDOWN_S
                 )
 
             # Couldn't use this interface — close and try next
@@ -1901,20 +2047,39 @@ class HidGestureListener:
 
         return False
 
+    def _interruptible_sleep(self, seconds):
+        """Sleep up to ``seconds`` in 0.1 s slices, returning early if the
+        listener has been stopped so teardown stays responsive."""
+        for _ in range(int(max(0.0, seconds) / 0.1)):
+            if not self._running:
+                return
+            time.sleep(0.1)
+
     def _main_loop(self):
         """Outer loop: connect → listen → reconnect on error/disconnect."""
         retry_logged = False
+        # Backoff for repeated failed connects: a sleeping or absent mouse
+        # otherwise re-enumerates (and on macOS re-opens IOKit managers) every
+        # pass (upstream #238). Grow 5 s to 30 s on consecutive failures;
+        # reset on any successful connect.
+        _CONNECT_BACKOFF_BASE_S = 5.0
+        _CONNECT_BACKOFF_MAX_S = 30.0
+        connect_backoff_s = _CONNECT_BACKOFF_BASE_S
         while self._running:
             if not self._try_connect():
                 if not retry_logged:
-                    print("[HidGesture] No compatible device; retrying in 5 s…")
+                    print(
+                        "[HidGesture] No compatible device; retrying with "
+                        f"backoff up to {_CONNECT_BACKOFF_MAX_S:.0f} s…"
+                    )
                     retry_logged = True
-                for _ in range(50):
-                    if not self._running:
-                        return
-                    time.sleep(0.1)
+                self._interruptible_sleep(connect_backoff_s)
+                connect_backoff_s = min(
+                    connect_backoff_s * 2, _CONNECT_BACKOFF_MAX_S
+                )
                 continue
             retry_logged = False
+            connect_backoff_s = _CONNECT_BACKOFF_BASE_S
 
             self._connected = True
             if self._on_connect:
@@ -2014,4 +2179,4 @@ class HidGestureListener:
                         pass
 
             if self._running:
-                time.sleep(2)
+                self._interruptible_sleep(2)
