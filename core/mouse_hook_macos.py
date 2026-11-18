@@ -2,6 +2,7 @@
 macOS mouse hook implementation.
 """
 
+import ctypes
 import functools
 import queue
 import sys
@@ -46,6 +47,41 @@ def _autoreleased(fn):
     return wrapper
 
 
+# The event tap is created through ctypes, not Quartz.CGEventTapCreate.
+# PyObjC's tap trampoline (pyobjc-framework-Quartz _callbacks.m,
+# m_CGEventTapCallBack, unfixed through 13.0) never releases the object the
+# Python callback returns. Returning the event, as a pass-through tap must,
+# pins that CGEvent forever: about 1 KB for every mouse move and scroll, on
+# the trackpad as well as the mouse. The ctypes callback below receives the
+# raw CGEventRef, lends a PyObjC proxy to the callback and returns the raw
+# pointer, so nothing outlives the call.
+_TAP_CALLBACK = ctypes.CFUNCTYPE(
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p
+)
+_CG_TAP_API = None
+
+
+def _cg_tap_api():
+    """Return (CGEventTapCreate, CFRelease) loaded through ctypes, once."""
+    global _CG_TAP_API
+    if _CG_TAP_API is None:
+        cg = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+        )
+        cf = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        cg.CGEventTapCreate.argtypes = [
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint64, _TAP_CALLBACK, ctypes.c_void_p,
+        ]
+        cg.CGEventTapCreate.restype = ctypes.c_void_p
+        cf.CFRelease.argtypes = [ctypes.c_void_p]
+        cf.CFRelease.restype = None
+        _CG_TAP_API = (cg.CGEventTapCreate, cf.CFRelease)
+    return _CG_TAP_API
+
+
 _BTN_MIDDLE = 2
 _BTN_BACK = 3
 _BTN_FORWARD = 4
@@ -75,6 +111,7 @@ class MouseHook(BaseMouseHook):
         self._running = False
         self._tap = None
         self._tap_source = None
+        self._tap_callback = None
         self.ignore_trackpad = True
         self._wake_observer = None
         self._session_resign_observer = None
@@ -582,6 +619,26 @@ class MouseHook(BaseMouseHook):
             with objc.autorelease_pool():
                 self._dispatch(event)
 
+    def _raw_event_tap_callback(self, proxy, event_type, event_ptr, refcon):
+        """ctypes entry point for the tap: run _event_tap_callback on a
+        borrowed proxy of the raw CGEventRef and return a raw pointer.
+
+        Pass-through returns the original pointer; swallow returns None
+        (NULL). Any failure passes the event through, because a NULL from an
+        active tap would drop the user's input.
+        """
+        try:
+            with objc.autorelease_pool():
+                cg_event = (
+                    objc.objc_object(c_void_p=event_ptr) if event_ptr else None
+                )
+                result = self._event_tap_callback(
+                    proxy, event_type, cg_event, refcon
+                )
+            return None if result is None else event_ptr
+        except Exception:
+            return event_ptr
+
     @_autoreleased
     def _event_tap_callback(self, proxy, event_type, cg_event, refcon):
         try:
@@ -991,14 +1048,22 @@ class MouseHook(BaseMouseHook):
             | Quartz.CGEventMaskBit(Quartz.kCGEventScrollWheel)
         )
 
-        self._tap = Quartz.CGEventTapCreate(
+        tap_create, cf_release = _cg_tap_api()
+        # Keep the ctypes callback alive for as long as the tap exists.
+        self._tap_callback = _TAP_CALLBACK(self._raw_event_tap_callback)
+        tap_ptr = tap_create(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
             Quartz.kCGEventTapOptionDefault,
             event_mask,
-            self._event_tap_callback,
+            self._tap_callback,
             None,
         )
+        self._tap = None
+        if tap_ptr:
+            # The proxy takes its own reference; drop the +1 from Create.
+            self._tap = objc.objc_object(c_void_p=tap_ptr)
+            cf_release(tap_ptr)
 
         if self._tap is None:
             print("[MouseHook] ERROR: Failed to create CGEventTap!")
@@ -1047,6 +1112,8 @@ class MouseHook(BaseMouseHook):
                     Quartz.kCFRunLoopCommonModes,
                 )
                 self._tap_source = None
+            # Invalidate so the tap can never call _tap_callback again.
+            Quartz.CFMachPortInvalidate(self._tap)
             self._tap = None
             print("[MouseHook] CGEventTap disabled and removed", flush=True)
 
