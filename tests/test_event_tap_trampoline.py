@@ -107,6 +107,65 @@ class EventTapTrampolineTests(unittest.TestCase):
         self.seen.clear()
         self.assertEqual(_cf.CFGetRetainCount(self.ptr), before)
 
+    def test_callback_error_is_logged_once(self):
+        self._stub("raise")
+        from io import StringIO
+        from unittest.mock import patch
+        with patch("sys.stdout", new_callable=StringIO) as out:
+            for _ in range(3):
+                self.hook._raw_event_tap_callback(
+                    None, Quartz.kCGEventMouseMoved, self.ptr, None
+                )
+        self.assertEqual(out.getvalue().count("trampoline error"), 1)
+
+
+@unittest.skipUnless(Quartz is not None, "macOS with PyObjC only")
+class EventTapLifecycleTests(unittest.TestCase):
+    """start() and stop() against a real CFMachPort standing in for the tap,
+    so the reference counting of the ctypes-created tap is checked."""
+
+    def setUp(self):
+        _cf.CFMachPortCreate.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+        ]
+        _cf.CFMachPortCreate.restype = ctypes.c_void_p
+        _cf.CFMachPortIsValid.argtypes = [ctypes.c_void_p]
+        _cf.CFMachPortIsValid.restype = ctypes.c_bool
+        self._callout = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p
+        )(lambda *a: None)
+        self.calls = []
+
+    def _fake_create(self, port_ptr):
+        def tap_create(location, placement, options, mask, callback, refcon):
+            self.calls.append((location, placement, options, mask, callback))
+            return port_ptr  # +1, like CGEventTapCreate
+        return tap_create
+
+    def test_start_and_stop_balance_the_tap_reference(self):
+        from unittest.mock import patch
+        port = _cf.CFMachPortCreate(None, self._callout, None, None)
+        self.assertTrue(port)
+        _cf.CFRetain(port)  # our own reference, to read the count after stop()
+        hook = mouse_hook_macos.MouseHook()
+        hook._start_hid_listener = lambda: None
+        hook._register_wake_observer = lambda: None
+        hook._stop_hid_listener = lambda: None
+        with patch.object(
+            mouse_hook_macos, "_cg_tap_api",
+            return_value=(self._fake_create(port), _cf.CFRelease),
+        ):
+            self.assertTrue(hook.start())
+        self.assertIs(self.calls[0][4], hook._tap_callback)
+        self.assertEqual(self.calls[0][2], Quartz.kCGEventTapOptionDefault)
+        hook.stop()
+        import gc
+        gc.collect()
+        self.assertFalse(_cf.CFMachPortIsValid(port))
+        # Only our own reference is left: Create's +1 was released once.
+        self.assertEqual(_cf.CFGetRetainCount(port), 1)
+        _cf.CFRelease(port)
+
 
 if __name__ == "__main__":
     unittest.main()

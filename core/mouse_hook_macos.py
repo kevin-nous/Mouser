@@ -112,6 +112,7 @@ class MouseHook(BaseMouseHook):
         self._tap = None
         self._tap_source = None
         self._tap_callback = None
+        self._tap_trampoline_error_logged = False
         self.ignore_trackpad = True
         self._wake_observer = None
         self._session_resign_observer = None
@@ -636,7 +637,15 @@ class MouseHook(BaseMouseHook):
                     proxy, event_type, cg_event, refcon
                 )
             return None if result is None else event_ptr
-        except Exception:
+        except BaseException as exc:
+            # Logged once: this runs for every mouse move.
+            if not self._tap_trampoline_error_logged:
+                self._tap_trampoline_error_logged = True
+                print(
+                    f"[MouseHook] event tap trampoline error, passing events "
+                    f"through: {exc!r}",
+                    flush=True,
+                )
             return event_ptr
 
     @_autoreleased
