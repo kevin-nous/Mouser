@@ -88,7 +88,8 @@ _BTN_FORWARD = 4
 # CGEvent button number -> per-button gesture owner name (core.config GESTURE_OWNERS).
 _BTN_TO_OWNER = {_BTN_BACK: "back", _BTN_FORWARD: "forward", _BTN_MIDDLE: "middle"}
 _SCROLL_INVERT_MARKER = 0x4D4F5553
-# CGEvent scroll fields (raw ids, as Quartz exports no constants for them).
+# CGEvent scroll fields, as raw ids (Quartz's kCGScrollWheelEventIsContinuous,
+# ...ScrollPhase, ...MomentumPhase; the hook tests swap in a mock Quartz).
 # Logitech hi-res wheels set IsContinuous like a trackpad, but only
 # trackpads / Magic Mice carry a gesture or momentum phase.
 _SCROLL_IS_CONTINUOUS_FIELD = 88
@@ -285,10 +286,11 @@ class MouseHook(BaseMouseHook):
         the hold), convert the vertical wheel into horizontal scroll and swallow
         the original. Returns True if it diverted.
 
-        Runs BEFORE the trackpad guard on purpose: the MX Anywhere 2S hi-res wheel
-        reports its scroll events as continuous, so ignore_trackpad would otherwise
-        swallow them before this ever sees them. Gated on _gesture_active + owner
-        match, so it never touches normal (non-held) scrolling.
+        Runs BEFORE the trackpad guard: it is gated on _gesture_active + owner
+        match, so it never touches normal (non-held) scrolling, and it never
+        depends on how the trackpad guard classifies the event (the MX Anywhere
+        2S hi-res wheel reports continuous like a trackpad; the guard now tells
+        them apart by scroll/momentum phase).
         """
         if not (self._gesture_active
                 and self._gesture_owner is not None
@@ -884,8 +886,8 @@ class MouseHook(BaseMouseHook):
                     == _SCROLL_INVERT_MARKER
                 ):
                     return cg_event
-                # Hold-modifier diversion runs BEFORE the trackpad guard: the 2S
-                # hi-res wheel reports continuous, which ignore_trackpad swallows.
+                # Hold-modifier diversion runs BEFORE the trackpad guard so it
+                # never depends on how that guard classifies the event.
                 if self._try_hscroll_modifier_divert(cg_event):
                     return None
                 if self.ignore_trackpad and self._is_trackpad_scroll(cg_event):

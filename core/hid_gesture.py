@@ -893,6 +893,9 @@ class HidGestureListener:
         # Candidates whose incompatibility was already logged, and whether the
         # Input Monitoring hint was; both reset on a successful connect.
         self._incompatible_logged = set()
+        self._skip_logged = set()
+        # Cooldown keys whose interface has REPROG_V4 but refused every divert.
+        self._divert_refused = set()
         self._not_permitted_logged = False
         self._pending_battery = None
         self._battery_result = None
@@ -1849,6 +1852,32 @@ class HidGestureListener:
 
         infos.sort(key=_direct_device_first)
 
+        # Expire cooldowns. An interface that has REPROG_V4 but refused every
+        # gesture divert (a Logitech keyboard) is cooled even when it is the
+        # only candidate: it cannot become a mouse by waking up, so probing it
+        # every backoff pass is pure noise. If every candidate is such an
+        # interface, skip the pass silently (the mouse, once it enumerates, is
+        # a new, uncooled candidate and connects at once).
+        now = time.monotonic()
+        self._reprog_absent_until = {
+            k: t for k, t in self._reprog_absent_until.items() if t > now
+        }
+        self._divert_refused = {
+            k for k in self._divert_refused if k in self._reprog_absent_until
+        }
+        if all(
+            _candidate_cooldown_key(info) in self._divert_refused
+            for info in infos
+        ):
+            _log_once(
+                ("all-divert-refused", tuple(sorted(
+                    _candidate_cooldown_key(i)[0] for i in infos
+                ))),
+                "[HidGesture] Only incompatible Logitech interfaces (e.g. a "
+                "keyboard) are present; waiting for a mouse.",
+            )
+            return False
+
         print(f"[HidGesture] Backend preference: {_BACKEND_PREFERENCE}")
         print(f"[HidGesture] Candidate HID interfaces: {len(infos)}")
         for info in infos:
@@ -1868,10 +1897,7 @@ class HidGestureListener:
         # incompatible interfaces is not re-probed on every pass. Never skip
         # when *all* candidates are cooling down, so a sole (e.g. just-woken)
         # device is still probed; the connect backoff throttles that case.
-        now = time.monotonic()
-        self._reprog_absent_until = {
-            k: t for k, t in self._reprog_absent_until.items() if t > now
-        }
+        # (Divert-refused interfaces were already handled above.)
         cooled = {
             _candidate_cooldown_key(info)
             for info in infos
@@ -1882,12 +1908,17 @@ class HidGestureListener:
 
         for info in infos:
             cand_key = _candidate_cooldown_key(info)
-            if skip_cooled and cand_key in cooled:
-                print(
-                    "[HidGesture] Skipping recently-incompatible interface "
-                    f"PID=0x{int(info.get('product_id', 0) or 0):04X} "
-                    "(no REPROG_V4; cooling down)"
-                )
+            if cand_key in cooled and (
+                skip_cooled or cand_key in self._divert_refused
+            ):
+                if cand_key not in self._skip_logged:
+                    self._skip_logged.add(cand_key)
+                    print(
+                        "[HidGesture] Skipping recently-incompatible "
+                        "interface "
+                        f"PID=0x{int(info.get('product_id', 0) or 0):04X} "
+                        "(cooling down)"
+                    )
                 continue
             pid = info.get("product_id", 0)
             up = info.get("usage_page", 0)
@@ -2090,7 +2121,9 @@ class HidGestureListener:
                             },
                         )
                         self._reprog_absent_until.pop(cand_key, None)
+                        self._divert_refused.discard(cand_key)
                         self._incompatible_logged.clear()
+                        self._skip_logged.clear()
                         self._not_permitted_logged = False
                         return True
                     continue     # divert failed — try next receiver slot
@@ -2107,7 +2140,9 @@ class HidGestureListener:
                         f"UP=0x{opened_up:04X} usage=0x{opened_usage:04X} "
                         f"transport={opened_transport or '-'} source={source}"
                     )
-            elif first_report:
+            else:
+                self._divert_refused.add(cand_key)
+            if reprog_found and first_report:
                 print(
                     "[HidGesture] REPROG_V4 found but no gesture divert was "
                     f"accepted on any devIdx PID=0x{int(pid or 0):04X} "

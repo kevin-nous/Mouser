@@ -1202,19 +1202,56 @@ class KeyboardProbeStormTests(unittest.TestCase):
         ]
         self.assertGreater(deadline, before + 100)
 
-    def test_solo_incompatible_keyboard_logs_once_across_passes(self):
+    def test_solo_keyboard_is_not_reprobed_on_later_passes(self):
         listener = hid_gesture.HidGestureListener()
         info = HidReconnectStormTests._info(0xB36A, "MX Keys Mini", b"/dev/kb")
+        real_divert = listener._divert  # the unpatched, bound method
         cm, _dev = self._connect(listener, info)
-        with cm, patch.object(listener, "_divert", return_value=False):
+        with cm, patch.object(listener, "_divert", side_effect=real_divert), \
+                patch.object(listener, "_set_cid_reporting",
+                             return_value=None) as set_cid:
             with patch("builtins.print") as print_mock:
-                for _ in range(3):
+                self.assertFalse(listener._try_connect())   # pass 1 probes
+                first_calls = set_cid.call_count
+                first_lines = len(print_mock.call_args_list)
+                self.assertGreater(first_calls, 0)
+                for _ in range(2):                           # passes 2, 3
                     self.assertFalse(listener._try_connect())
-        summaries = [
-            m for m in HidReconnectStormTests._printed_messages(print_mock)
-            if "treating as incompatible" in m
-        ]
-        self.assertEqual(len(summaries), 1)
+        self.assertEqual(set_cid.call_count, first_calls)
+        # Later passes add at most the one "waiting for a mouse" line.
+        self.assertLessEqual(
+            len(print_mock.call_args_list) - first_lines, 1
+        )
+
+    def test_skip_message_does_not_claim_reprog_is_missing(self):
+        listener = hid_gesture.HidGestureListener()
+        kb = HidReconnectStormTests._info(0xB36A, "AAA MX Keys Mini", b"/dev/kb")
+        mouse = HidReconnectStormTests._info(0xB034, "MX Master 3S", b"/dev/m")
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        with helper._connecting(listener, [kb, mouse], fake_dev):
+            key = hid_gesture._candidate_cooldown_key(kb)
+            listener._reprog_absent_until[key] = time.monotonic() + 100
+            listener._divert_refused.add(key)
+            with patch("builtins.print") as print_mock:
+                self.assertTrue(listener._try_connect())
+        skips = [m for m in HidReconnectStormTests._printed_messages(print_mock)
+                 if "Skipping recently-incompatible" in m]
+        self.assertEqual(len(skips), 1)
+        self.assertNotIn("no REPROG_V4", skips[0])
+
+    def test_solo_reprog_absent_interface_is_still_probed(self):
+        # A sleeping mouse behind a receiver exposes no REPROG_V4 until it
+        # wakes; that case keeps the sole-candidate bypass.
+        listener = hid_gesture.HidGestureListener()
+        info = HidReconnectStormTests._info(0xB034, "MX Master 3S", b"/dev/m")
+        listener._reprog_absent_until[
+            hid_gesture._candidate_cooldown_key(info)
+        ] = time.monotonic() + 100
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        with helper._connecting(listener, [info], fake_dev):
+            self.assertTrue(listener._try_connect())
 
     def test_cooled_keyboard_is_skipped_when_the_mouse_is_present(self):
         listener = hid_gesture.HidGestureListener()

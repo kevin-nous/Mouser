@@ -107,3 +107,7 @@ Quartz.CGEventPost(Quartz.kCGHIDEventTap, new)
 - [[2026-07-21-proportional-scroll-injection-rounding]] — the F1 rounding gotcha in the same injector
 - Feature PRD: `docs/prds/2026-07-20-horizontal-scroll-modifier.md`; issues 008–013
 - Fix commit: `4533ac3` (fix(macos): make hscroll modifier actually scroll on real 2S hardware)
+
+## Update 2026-11-23
+
+`ignore_trackpad` no longer treats every continuous scroll as a trackpad. The guard now also requires a scroll phase (CGEvent field 99) or momentum phase (field 123) that is not zero, so a hi-res mouse wheel (continuous, both phases 0) still gets `invert_vscroll` and the `hscroll_left`/`hscroll_right` actions. Trackpads and Magic Mice always carry a phase. Tests: `MacOSTrackpadScrollFilterTests` in `tests/test_mouse_hook.py`.
