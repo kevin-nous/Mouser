@@ -104,8 +104,10 @@ class Engine:
         host a per-button gesture on that owner -- mirrors the capability
         check in ui.backend.gestureEligibleOwners. Direction bindings
         themselves are left untouched in config; this only narrows what gets
-        passed to the hook as armed. No device connected means arming is
-        moot, so nothing is eligible. Restricted to BUTTON_GESTURE_OWNERS so
+        passed to the hook as armed. When no HID++ device is connected yet,
+        explicitly enabled owners still arm so event-tap gestures survive
+        HID++ outages; once a device connects, its capabilities narrow them.
+        Restricted to BUTTON_GESTURE_OWNERS so
         a bound+enabled+eligible tilt owner (gesture_owners() is the
         button+tilt union) isn't also fed to the hook's button-owner path --
         see _active_tilt_owners for the tilt counterpart."""
@@ -123,23 +125,27 @@ class Engine:
 
     def _gate_owner_eligibility(self, bound, settings):
         """Shared enable+device-eligibility filter for an already owner-kind-
-        scoped `bound` set. See _active_gesture_owners / _active_tilt_owners."""
+        scoped `bound` set. When no HID++ device is connected yet
+        (`device_buttons is None`), explicitly enabled event-tap owners still
+        arm so gestures keep working during HID++ outages or before connect
+        (same no-device fallback as divert_mode_shift); once a device connects,
+        its `supported_buttons` narrows eligibility."""
         if not bound:
             return set()
         device = getattr(self, "connected_device", None)
         device_buttons = getattr(device, "supported_buttons", None) if device else None
-        if device_buttons is None:
-            return set()
         enabled_flags = settings.get("gesture_owner_enabled", {})
         return {
             owner for owner in bound
-            if enabled_flags.get(owner, False) and f"gesture_{owner}_left" in device_buttons
+            if enabled_flags.get(owner, False)
+            and (device_buttons is None or f"gesture_{owner}_left" in device_buttons)
         }
 
     def _active_hscroll_modifier_owner(self, cfg, settings):
         """The event-tap owner button (back/forward/middle) designated as the
         horizontal-scroll hold modifier via settings.hscroll_modifier_owner, if it
-        can host an event-tap owner hold on the connected device -- else None.
+        can host an event-tap owner hold (or no HID++ device is connected yet) --
+        else None.
 
         Decoupled from the button's action mapping (issue 013 follow-up): a tap
         still runs the button's own bound action; only holding it triggers hscroll.
@@ -149,7 +155,7 @@ class Engine:
             return None
         device = getattr(self, "connected_device", None)
         device_buttons = getattr(device, "supported_buttons", None) if device else None
-        if device_buttons is None or f"gesture_{owner}_left" not in device_buttons:
+        if device_buttons is not None and f"gesture_{owner}_left" not in device_buttons:
             return None
         return owner
 
