@@ -9,6 +9,12 @@ from core import log_setup
 
 
 class GetLogDirTests(unittest.TestCase):
+    def setUp(self):
+        self._env_patch = patch.dict(os.environ, {}, clear=False)
+        self._env_patch.start()
+        os.environ.pop("MOUSER_LOG_DIR", None)
+        self.addCleanup(self._env_patch.stop)
+
     def test_darwin_returns_library_logs_mouser(self):
         with patch.object(sys, "platform", "darwin"):
             result = log_setup._get_log_dir()
