@@ -140,6 +140,29 @@ class _HidDeviceCompat:
     def close(self):
         self._dev.close()
 
+# kIOReturnNotPermitted: IOKit refuses HID access (Input Monitoring not granted,
+# or a kernel approval stall). Retrying only burns ~5 s per attempt.
+_K_IORETURN_NOT_PERMITTED = 0xE00002E2
+
+
+class _IOKitNotPermitted(OSError):
+    """IOKit returned kIOReturnNotPermitted; the rest of the pass is futile."""
+
+
+def _iokit_error(what, res):
+    """OSError for a failed IOKit call. ``res`` may be signed or unsigned, so
+    it is masked to 32 bits (-0x1FFFFD1E and 0xE00002E2 are the same code)."""
+    code = int(res) & 0xFFFFFFFF
+    cls = _IOKitNotPermitted if code == _K_IORETURN_NOT_PERMITTED else OSError
+    return cls(f"{what} failed: 0x{code:08X}")
+
+
+_MAC_NOT_PERMITTED_HINT = (
+    "[HidGesture] macOS denied HID access (kIOReturnNotPermitted). Grant "
+    "Mouser Input Monitoring in System Settings > Privacy & Security, then "
+    "restart Mouser. Skipping the rest of this connect pass."
+)
+
 _MAC_NATIVE_OK = False
 if sys.platform == "darwin":
     try:
@@ -391,7 +414,7 @@ if _MAC_NATIVE_OK:
                 _iokit.IOHIDManagerSetDeviceMatching(manager, matching)
                 res = _iokit.IOHIDManagerOpen(manager, 0)
                 if res != 0:
-                    raise OSError(f"IOHIDManagerOpen failed: 0x{res:08X}")
+                    raise _iokit_error("IOHIDManagerOpen", res)
 
                 devices = _iokit.IOHIDManagerCopyDevices(manager)
                 if not devices:
@@ -425,6 +448,8 @@ if _MAC_NATIVE_OK:
                         })
                 finally:
                     _cf.CFRelease(devices)
+            except _IOKitNotPermitted:
+                raise  # _try_connect aborts the pass; cleanup runs in finally
             except Exception as exc:
                 print(f"[HidGesture] native enumerate error: {exc}")
             finally:
@@ -480,7 +505,7 @@ if _MAC_NATIVE_OK:
             _iokit.IOHIDManagerSetDeviceMatching(self._manager, self._matching)
             res = _iokit.IOHIDManagerOpen(self._manager, 0)
             if res != 0:
-                raise OSError(f"IOHIDManagerOpen failed: 0x{res:08X}")
+                raise _iokit_error("IOHIDManagerOpen", res)
 
             devices = _iokit.IOHIDManagerCopyDevices(self._manager)
             if not devices:
@@ -497,7 +522,7 @@ if _MAC_NATIVE_OK:
 
             res = _iokit.IOHIDDeviceOpen(self._device, 0)
             if res != 0:
-                raise OSError(f"IOHIDDeviceOpen failed: 0x{res:08X}")
+                raise _iokit_error("IOHIDDeviceOpen", res)
             self._run_loop = _cf.CFRunLoopGetCurrent()
             self._input_buffer = (c_uint8 * 64)()
             self._report_callback = _IOHID_REPORT_CALLBACK(self._on_input_report)
@@ -819,11 +844,14 @@ def _candidate_cooldown_key(info) -> tuple:
 class HidGestureListener:
     """Background thread: diverts the gesture button and listens via HID++."""
 
-    # Cooldown before an interface that opened but exposed no REPROG_V4 is
-    # re-probed, so a stable set of incompatible interfaces is not re-scanned
-    # every pass during a reconnect storm. Bypassed when it is the only
-    # candidate so a woken device reconnects promptly (upstream #238).
-    _REPROG_ABSENT_COOLDOWN_S = 10.0
+    # Cooldown before an incompatible interface (opened, but no REPROG_V4, or
+    # REPROG_V4 present and every gesture divert refused, e.g. a Logitech
+    # keyboard) is re-probed, so a stable set of incompatible interfaces is not
+    # re-scanned every pass. Must exceed the connect backoff ceiling
+    # (_CONNECT_BACKOFF_MAX_S, 30 s) or it expires before the next retry pass.
+    # Bypassed when it is the only candidate so a woken device reconnects
+    # promptly (upstream #238).
+    _REPROG_ABSENT_COOLDOWN_S = 120.0
 
     def __init__(self, on_down=None, on_up=None, on_move=None,
                  on_connect=None, on_disconnect=None, extra_diverts=None):
@@ -862,6 +890,13 @@ class HidGestureListener:
         self._reconnect_requested = False
         # signature -> monotonic deadline; see _REPROG_ABSENT_COOLDOWN_S.
         self._reprog_absent_until = {}
+        # Candidates whose incompatibility was already logged, and whether the
+        # Input Monitoring hint was; both reset on a successful connect.
+        self._incompatible_logged = set()
+        self._skip_logged = set()
+        # Cooldown keys whose interface has REPROG_V4 but refused every divert.
+        self._divert_refused = set()
+        self._not_permitted_logged = False
         self._pending_battery = None
         self._battery_result = None
         self._last_logged_battery = None
@@ -1366,7 +1401,12 @@ class HidGestureListener:
         """Divert additional CIDs (e.g. mode shift) without raw XY."""
         if self._feat_idx is None:
             return
+        # A device only gets a divert for CIDs it reports (the 2S has no
+        # 0x00C4); an empty control list means discovery failed, so try all.
+        present = {c["cid"] for c in self._last_controls}
         for cid, info in self._extra_diverts.items():
+            if present and cid not in present:
+                continue
             resp = self._set_cid_reporting(cid, 0x03)
             ok = resp is not None
             print(f"[HidGesture] Extra divert {_format_cid(cid)}: "
@@ -1788,9 +1828,19 @@ class HidGestureListener:
 
     # ── connect / main loop ───────────────────────────────────────
 
+    def _log_not_permitted(self):
+        """Log the Input Monitoring hint once until a connect succeeds."""
+        if not self._not_permitted_logged:
+            self._not_permitted_logged = True
+            print(_MAC_NOT_PERMITTED_HINT)
+
     def _try_connect(self):
         """Open the vendor HID collection, discover features, divert."""
-        infos = self._vendor_hid_infos()
+        try:
+            infos = self._vendor_hid_infos()
+        except _IOKitNotPermitted:
+            self._log_not_permitted()
+            return False
         if not infos:
             return False
 
@@ -1801,6 +1851,32 @@ class HidGestureListener:
             return (1 if "receiver" in name else 0, name)
 
         infos.sort(key=_direct_device_first)
+
+        # Expire cooldowns. An interface that has REPROG_V4 but refused every
+        # gesture divert (a Logitech keyboard) is cooled even when it is the
+        # only candidate: it cannot become a mouse by waking up, so probing it
+        # every backoff pass is pure noise. If every candidate is such an
+        # interface, skip the pass silently (the mouse, once it enumerates, is
+        # a new, uncooled candidate and connects at once).
+        now = time.monotonic()
+        self._reprog_absent_until = {
+            k: t for k, t in self._reprog_absent_until.items() if t > now
+        }
+        self._divert_refused = {
+            k for k in self._divert_refused if k in self._reprog_absent_until
+        }
+        if all(
+            _candidate_cooldown_key(info) in self._divert_refused
+            for info in infos
+        ):
+            _log_once(
+                ("all-divert-refused", tuple(sorted(
+                    _candidate_cooldown_key(i)[0] for i in infos
+                ))),
+                "[HidGesture] Only incompatible Logitech interfaces (e.g. a "
+                "keyboard) are present; waiting for a mouse.",
+            )
+            return False
 
         print(f"[HidGesture] Backend preference: {_BACKEND_PREFERENCE}")
         print(f"[HidGesture] Candidate HID interfaces: {len(infos)}")
@@ -1821,25 +1897,28 @@ class HidGestureListener:
         # incompatible interfaces is not re-probed on every pass. Never skip
         # when *all* candidates are cooling down, so a sole (e.g. just-woken)
         # device is still probed; the connect backoff throttles that case.
-        now = time.monotonic()
-        self._reprog_absent_until = {
-            k: t for k, t in self._reprog_absent_until.items() if t > now
-        }
+        # (Divert-refused interfaces were already handled above.)
         cooled = {
             _candidate_cooldown_key(info)
             for info in infos
             if _candidate_cooldown_key(info) in self._reprog_absent_until
         }
         skip_cooled = bool(cooled) and len(cooled) < len(infos)
+        ble_tried = set()
 
         for info in infos:
             cand_key = _candidate_cooldown_key(info)
-            if skip_cooled and cand_key in cooled:
-                print(
-                    "[HidGesture] Skipping recently-incompatible interface "
-                    f"PID=0x{int(info.get('product_id', 0) or 0):04X} "
-                    "(no REPROG_V4; cooling down)"
-                )
+            if cand_key in cooled and (
+                skip_cooled or cand_key in self._divert_refused
+            ):
+                if cand_key not in self._skip_logged:
+                    self._skip_logged.add(cand_key)
+                    print(
+                        "[HidGesture] Skipping recently-incompatible "
+                        "interface "
+                        f"PID=0x{int(info.get('product_id', 0) or 0):04X} "
+                        "(cooling down)"
+                    )
                 continue
             pid = info.get("product_id", 0)
             up = info.get("usage_page", 0)
@@ -1865,21 +1944,32 @@ class HidGestureListener:
             open_attempts = []
             # On macOS, prefer IOKit (non-exclusive access) over hidapi
             # which may lock the device and freeze the cursor.
-            if (
-                sys.platform == "darwin"
-                and _MAC_NATIVE_OK
-                and _BACKEND_PREFERENCE in ("auto", "iokit")
-            ):
-                open_attempts.extend([
-                    ("iokit-exact", info),
-                    ("iokit-ble", {
+            mac_native = sys.platform == "darwin" and _MAC_NATIVE_OK
+            if mac_native and _BACKEND_PREFERENCE in ("auto", "iokit"):
+                open_attempts.append(("iokit-exact", info))
+                # The BLE match ignores usage, so several interfaces of one
+                # PID would repeat an identical open; try it once per pass.
+                ble_key = (pid, "Bluetooth Low Energy")
+                if ble_key not in ble_tried:
+                    ble_tried.add(ble_key)
+                    open_attempts.append(("iokit-ble", {
                         "product_id": pid,
                         "usage_page": 0,
                         "usage": 0,
                         "transport": "Bluetooth Low Energy",
-                    }),
-                ])
-            if _BACKEND_PREFERENCE in ("auto", "hidapi") and info.get("path"):
+                    }))
+            # cython-hidapi's open_path() holds the GIL through a stalled
+            # IOKit/TCC open, starving the CGEventTap until macOS disables
+            # it. In auto mode on macOS the native backend is the only opener;
+            # hidapi stays available when asked for or when native is absent.
+            hidapi_allowed = not (
+                mac_native and _BACKEND_PREFERENCE == "auto"
+            )
+            if (
+                hidapi_allowed
+                and _BACKEND_PREFERENCE in ("auto", "hidapi")
+                and info.get("path")
+            ):
                 open_attempts.append(("hidapi", info))
 
             for transport, open_info in open_attempts:
@@ -1915,6 +2005,12 @@ class HidGestureListener:
                     opened_path = _device_path_display(open_info.get("path"))
                     print(f"[HidGesture] Opened PID=0x{pid:04X} via {transport}")
                     break
+                except _IOKitNotPermitted as exc:
+                    print(f"[HidGesture] Can't open PID=0x{pid:04X} "
+                          f"via {transport}: {exc}")
+                    self._dev = None
+                    self._log_not_permitted()
+                    return False
                 except Exception as exc:
                     print(f"[HidGesture] Can't open PID=0x{pid:04X} "
                           f"UP=0x{int(open_info.get('usage_page', up) or 0):04X} "
@@ -2025,18 +2121,37 @@ class HidGestureListener:
                             },
                         )
                         self._reprog_absent_until.pop(cand_key, None)
+                        self._divert_refused.discard(cand_key)
+                        self._incompatible_logged.clear()
+                        self._skip_logged.clear()
+                        self._not_permitted_logged = False
                         return True
                     continue     # divert failed — try next receiver slot
+            # Incompatible: no REPROG_V4, or REPROG_V4 present but no gesture
+            # divert accepted on any devIdx (a Logitech keyboard). Either way
+            # re-probing it every pass is a storm while the mouse is away.
+            first_report = cand_key not in self._incompatible_logged
+            self._incompatible_logged.add(cand_key)
             if not reprog_found:
+                if first_report:
+                    print(
+                        "[HidGesture] Opened candidate but REPROG_V4 was not "
+                        f"found on tested devIdx values PID=0x{int(pid or 0):04X} "
+                        f"UP=0x{opened_up:04X} usage=0x{opened_usage:04X} "
+                        f"transport={opened_transport or '-'} source={source}"
+                    )
+            else:
+                self._divert_refused.add(cand_key)
+            if reprog_found and first_report:
                 print(
-                    "[HidGesture] Opened candidate but REPROG_V4 was not found "
-                    f"on tested devIdx values PID=0x{int(pid or 0):04X} "
+                    "[HidGesture] REPROG_V4 found but no gesture divert was "
+                    f"accepted on any devIdx PID=0x{int(pid or 0):04X} "
                     f"UP=0x{opened_up:04X} usage=0x{opened_usage:04X} "
-                    f"transport={opened_transport or '-'} source={source}"
+                    f"source={source}; treating as incompatible"
                 )
-                self._reprog_absent_until[cand_key] = (
-                    time.monotonic() + self._REPROG_ABSENT_COOLDOWN_S
-                )
+            self._reprog_absent_until[cand_key] = (
+                time.monotonic() + self._REPROG_ABSENT_COOLDOWN_S
+            )
 
             # Couldn't use this interface — close and try next
             try:

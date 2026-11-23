@@ -12,6 +12,9 @@ import threading
 
 
 def _get_log_dir() -> str:
+    override = os.environ.get("MOUSER_LOG_DIR")
+    if override:  # lets tests keep out of the live log
+        return override
     if sys.platform == "darwin":
         return os.path.join(os.path.expanduser("~"), "Library", "Logs", "Mouser")
     elif sys.platform == "linux":

@@ -9,6 +9,12 @@ from core import log_setup
 
 
 class GetLogDirTests(unittest.TestCase):
+    def setUp(self):
+        self._env_patch = patch.dict(os.environ, {}, clear=False)
+        self._env_patch.start()
+        os.environ.pop("MOUSER_LOG_DIR", None)
+        self.addCleanup(self._env_patch.stop)
+
     def test_darwin_returns_library_logs_mouser(self):
         with patch.object(sys, "platform", "darwin"):
             result = log_setup._get_log_dir()
@@ -42,6 +48,25 @@ class GetLogDirTests(unittest.TestCase):
         ):
             result = log_setup._get_log_dir()
         self.assertEqual(result, os.path.join(fake_appdata, "Mouser", "logs"))
+
+
+class LiveLogIsolationTests(unittest.TestCase):
+    """The test run must never attach a handler to the live Mouser log (the
+    main_qml import calls setup_logging() at import time)."""
+
+    def test_log_dir_honours_override(self):
+        with patch.dict(os.environ, {"MOUSER_LOG_DIR": "/some/test/dir"}):
+            self.assertEqual(log_setup._get_log_dir(), "/some/test/dir")
+
+    def test_no_root_handler_writes_to_the_live_log_dir(self):
+        live = os.path.realpath(log_setup._get_log_dir())
+        for handler in logging.getLogger().handlers:
+            path = getattr(handler, "baseFilename", None)
+            if path:
+                self.assertFalse(
+                    os.path.realpath(path).startswith(live + os.sep),
+                    f"test run is logging to the live log: {path}",
+                )
 
 
 class SetupLoggingTests(unittest.TestCase):

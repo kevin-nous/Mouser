@@ -223,6 +223,16 @@ class EngineHorizontalScrollTests(unittest.TestCase):
         engine._setup_hooks()
         self.assertIsNone(engine.hook._hscroll_modifier_owner_arg)
 
+    def test_setup_hooks_arms_hscroll_modifier_when_no_hid_device_connected(self):
+        """Event-tap hscroll hold does not require HID++: when no device is
+        connected yet (or HID++ is blocked), an opted-in modifier still arms."""
+        engine = self._make_engine()
+        engine.cfg["settings"]["hscroll_modifier_owner"] = "back"
+        engine.hook.connected_device = None
+        engine._setup_hooks()
+        self.assertEqual(engine.hook._hscroll_modifier_owner_arg, "back")
+        self.assertIn("back", engine.hook._gesture_config["owners"])
+
     def test_on_app_change_resets_hscroll_hold(self):
         """Issue 012 S3 — a foreground app change clears any stuck hscroll hold,
         even when the profile does not change."""
@@ -885,11 +895,15 @@ class EngineGestureArmingGateTests(unittest.TestCase):
 
         self.assertEqual(engine.hook._gesture_config["owners"], set())
 
-    def test_bound_and_enabled_owner_stays_off_with_no_device_connected(self):
+    def test_bound_and_enabled_owner_arms_with_no_device_connected(self):
+        """Event-tap gestures do not depend on HID++: explicitly enabled owners
+        still arm while no HID++ device is connected, and narrow once a device
+        reports its capabilities."""
         cfg = self._cfg(enabled={"forward": True}, gesture_forward_up="mission_control")
         engine = self._make_engine(cfg, device=None)
 
-        self.assertEqual(engine.hook._gesture_config["owners"], set())
+        self.assertEqual(engine.hook._gesture_config["owners"], {"forward"})
+        self.assertIn("gesture_swipe_up", engine.hook.registered)
 
     def test_bound_and_enabled_owner_does_not_leak_onto_ineligible_device(self):
         # Regression: MX Master 3S has no per-button event-tap gesture support --
@@ -968,19 +982,32 @@ class EngineGestureRearmOnConnectTests(unittest.TestCase):
             return thread
         return factory
 
-    def test_owner_arms_once_device_becomes_ready_after_construction(self):
-        """Bug A: constructed with no device connected, the owner stays
-        unarmed until a hid-features-ready connection-change recomputes it."""
+    def test_owner_arms_before_connect_and_narrows_when_ineligible_device_connects(self):
+        """Explicitly enabled event-tap owners arm immediately at startup even
+        before HID++ connects, remain cleanly wired on an eligible device, and
+        disarm if an ineligible device (e.g. MX Master 3S) later connects."""
         engine = self._make_engine()
-        self.assertEqual(engine.hook._gesture_config["owners"], set())
-        self.assertNotIn("gesture_swipe_up", engine.hook.registered)
+        self.assertEqual(engine.hook._gesture_config["owners"], {"forward"})
+        self.assertIn("gesture_swipe_up", engine.hook.registered)
 
         with patch("core.engine.threading.Thread", side_effect=self._thread_factory([])):
             self._connect_device(engine)
             engine._on_connection_change(True)
 
         self.assertEqual(engine.hook._gesture_config["owners"], {"forward"})
-        self.assertIn("gesture_swipe_up", engine.hook.registered)
+        self.assertEqual(len(engine.hook.registered["gesture_swipe_up"]), 1)
+
+        ineligible = SimpleNamespace(supported_buttons=("middle", "xbutton1", "xbutton2"))
+        with patch("core.engine.threading.Thread", side_effect=self._thread_factory([])):
+            self._disconnect_device(engine)
+            engine._on_connection_change(False)
+            engine.hook.connected_device = ineligible
+            engine.hook.device_connected = True
+            engine.hook._hid_gesture = SimpleNamespace(connected_device=ineligible)
+            engine._on_connection_change(True)
+
+        self.assertEqual(engine.hook._gesture_config["owners"], set())
+        self.assertNotIn("gesture_swipe_up", engine.hook.registered)
 
     def test_reconnect_cycle_does_not_stack_duplicate_handlers(self):
         """Bug B: a disconnect/reconnect cycle must reset_bindings() before
@@ -1081,11 +1108,11 @@ class EngineTiltGestureTests(unittest.TestCase):
 
         self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
 
-    def test_tilt_owner_stays_off_with_no_device_connected(self):
+    def test_tilt_owner_arms_with_no_device_connected(self):
         cfg = self._cfg(enabled={"tilt_left": True}, gesture_tilt_left_up="mission_control")
         engine = self._make_engine(cfg, device=None)
 
-        self.assertEqual(engine.hook._gesture_config["tilt_owners"], set())
+        self.assertEqual(engine.hook._gesture_config["tilt_owners"], {"tilt_left"})
 
     def test_tilt_owner_does_not_leak_onto_non_tilt_eligible_device(self):
         # Regression: a device with per-button event-tap support but no

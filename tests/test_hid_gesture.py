@@ -1013,5 +1013,350 @@ class MacNativeHidLeakTests(unittest.TestCase):
         self.assertEqual(order, ["pool opened", "run loop", "pool drained"])
 
 
+def _mac_info(pid, usage, product="MX Anywhere 2S"):
+    return {
+        "product_id": pid,
+        "usage_page": 0xFF00,
+        "usage": usage,
+        "transport": "Bluetooth Low Energy",
+        "source": "iokit-enumerate",
+        "product_string": product,
+    }
+
+
+class _FakeNativeFactory:
+    """Stand-in for _MacNativeHidDevice that records every construction."""
+
+    def __init__(self, open_error=None):
+        self.open_error = open_error
+        self.calls = []  # (pid, usage_page, usage) per construction
+
+    @property
+    def ble_calls(self):
+        """The iokit-ble attempt matches on PID alone (usage page/usage 0)."""
+        return [c for c in self.calls if c[1] == 0 and c[2] == 0]
+
+    def __call__(self, pid, usage_page=0, usage=0, transport=None):
+        self.calls.append((pid, usage_page, usage))
+        dev = Mock()
+        dev.open.side_effect = self.open_error
+        return dev
+
+
+class MacConnectPolicyTests(unittest.TestCase):
+    """macOS connect policy: no hidapi fallback in auto mode, fast bail on
+    kIOReturnNotPermitted, one iokit-ble open per PID per pass."""
+
+    @staticmethod
+    def _printed(print_mock):
+        return [
+            " ".join(str(arg) for arg in call.args)
+            for call in print_mock.call_args_list
+        ]
+
+    @contextlib.contextmanager
+    def _mac(self, listener, infos, native, *, backend="auto",
+             native_ok=True, hidapi_dev=None):
+        hidapi_dev = hidapi_dev or _FakeHidDevice()
+        with contextlib.ExitStack() as stack:
+            for cm in (
+                patch.object(sys, "platform", "darwin"),
+                patch.object(hid_gesture, "_MAC_NATIVE_OK", native_ok),
+                patch.object(hid_gesture, "_MacNativeHidDevice", native,
+                             create=True),
+                patch.object(hid_gesture, "HIDAPI_OK", True),
+                patch.object(hid_gesture, "_BACKEND_PREFERENCE", backend),
+                patch.object(hid_gesture, "_HID_API_STYLE", "hidapi"),
+                patch.object(hid_gesture, "_hid",
+                             SimpleNamespace(device=lambda: hidapi_dev),
+                             create=True),
+                patch.object(listener, "_vendor_hid_infos",
+                             return_value=infos),
+                patch.object(listener, "_find_feature", return_value=None),
+                patch.object(listener, "_query_device_name",
+                             return_value=None),
+            ):
+                stack.enter_context(cm)
+            yield hidapi_dev
+
+    @staticmethod
+    def _hidapi_info(pid=0xB01A):
+        return dict(_mac_info(pid, 1), path=b"/dev/hid-x",
+                    source="hidapi-enumerate")
+
+    def test_auto_on_mac_never_falls_back_to_hidapi_open_path(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory(open_error=OSError("no device"))
+        with self._mac(listener, [self._hidapi_info()], native) as hidapi_dev:
+            self.assertFalse(listener._try_connect())
+        hidapi_dev.open_path.assert_not_called()
+        self.assertEqual(len(native.calls), 2)  # exact + ble only
+
+    def test_explicit_hidapi_preference_still_uses_hidapi_on_mac(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory()
+        with self._mac(listener, [self._hidapi_info()], native,
+                       backend="hidapi") as hidapi_dev:
+            listener._try_connect()
+        hidapi_dev.open_path.assert_called_once_with(b"/dev/hid-x")
+        self.assertEqual(native.calls, [])
+
+    def test_auto_without_native_backend_still_uses_hidapi(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory()
+        with self._mac(listener, [self._hidapi_info()], native,
+                       native_ok=False) as hidapi_dev:
+            listener._try_connect()
+        hidapi_dev.open_path.assert_called_once_with(b"/dev/hid-x")
+
+    def test_not_permitted_open_aborts_the_pass_and_hints_once(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory(
+            open_error=hid_gesture._IOKitNotPermitted("denied")
+        )
+        infos = [_mac_info(0xB01A, 1), _mac_info(0xB034, 1, "MX Master 3S")]
+        with self._mac(listener, infos, native):
+            with patch("builtins.print") as print_mock:
+                self.assertFalse(listener._try_connect())
+                self.assertFalse(listener._try_connect())
+        # One open attempt in the first pass, one in the second: never the
+        # second candidate, never the ble fallback.
+        self.assertEqual(len(native.calls), 2)
+        hints = [m for m in self._printed(print_mock)
+                 if "Input Monitoring" in m]
+        self.assertEqual(len(hints), 1)
+
+    def test_not_permitted_enumerate_aborts_the_pass(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory()
+        with self._mac(listener, [], native):
+            with patch.object(
+                listener, "_vendor_hid_infos",
+                side_effect=hid_gesture._IOKitNotPermitted("denied"),
+            ), patch("builtins.print") as print_mock:
+                self.assertFalse(listener._try_connect())
+        self.assertEqual(native.calls, [])
+        self.assertTrue(any("Input Monitoring" in m
+                            for m in self._printed(print_mock)))
+
+    def test_successful_connect_rearms_the_permission_hint(self):
+        listener = hid_gesture.HidGestureListener()
+        listener._not_permitted_logged = True
+        native = _FakeNativeFactory()
+        info = _mac_info(0xB01A, 1)
+        with self._mac(listener, [info], native):
+            with patch.object(
+                listener, "_find_feature", return_value=0x10
+            ), patch.object(
+                listener, "_discover_reprog_controls", return_value=[]
+            ), patch.object(listener, "_divert", return_value=True), \
+                    patch.object(listener, "_divert_extras"):
+                self.assertTrue(listener._try_connect())
+        self.assertFalse(listener._not_permitted_logged)
+
+    def test_iokit_ble_open_is_tried_once_per_pid_per_pass(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory(open_error=OSError("no device"))
+        infos = [_mac_info(0xB01A, usage) for usage in (1, 2, 6, 0x80)]
+        with self._mac(listener, infos, native):
+            self.assertFalse(listener._try_connect())
+        self.assertEqual(len(native.ble_calls), 1)
+        self.assertEqual(len(native.calls), 4 + 1)
+
+    def test_iokit_ble_dedupe_is_per_pid(self):
+        listener = hid_gesture.HidGestureListener()
+        native = _FakeNativeFactory(open_error=OSError("no device"))
+        infos = [_mac_info(0xB01A, 1), _mac_info(0xB01A, 2),
+                 _mac_info(0xB034, 1, "MX Master 3S")]
+        with self._mac(listener, infos, native):
+            listener._try_connect()
+        self.assertEqual(len(native.ble_calls), 2)  # one per PID
+        self.assertEqual(len(native.calls), 3 + 2)
+
+
+class KeyboardProbeStormTests(unittest.TestCase):
+    """A Logitech keyboard exposes REPROG_V4 but refuses every gesture divert."""
+
+    def _connect(self, listener, info):
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        return helper._connecting(
+            listener, [info], fake_dev, reprog_found=True
+        ), fake_dev
+
+    def test_incompatible_cooldown_outlasts_the_connect_backoff(self):
+        # _main_loop backs off up to 30 s between passes.
+        self.assertGreater(
+            hid_gesture.HidGestureListener._REPROG_ABSENT_COOLDOWN_S, 30.0
+        )
+
+    def test_failed_divert_on_every_slot_records_cooldown(self):
+        listener = hid_gesture.HidGestureListener()
+        info = HidReconnectStormTests._info(0xB36A, "MX Keys Mini", b"/dev/kb")
+        cm, _dev = self._connect(listener, info)
+        with cm, patch.object(listener, "_divert", return_value=False):
+            before = time.monotonic()
+            self.assertFalse(listener._try_connect())
+        deadline = listener._reprog_absent_until[
+            hid_gesture._candidate_cooldown_key(info)
+        ]
+        self.assertGreater(deadline, before + 100)
+
+    def test_solo_keyboard_is_not_reprobed_on_later_passes(self):
+        listener = hid_gesture.HidGestureListener()
+        info = HidReconnectStormTests._info(0xB36A, "MX Keys Mini", b"/dev/kb")
+        real_divert = listener._divert  # the unpatched, bound method
+        cm, _dev = self._connect(listener, info)
+        with cm, patch.object(listener, "_divert", side_effect=real_divert), \
+                patch.object(listener, "_set_cid_reporting",
+                             return_value=None) as set_cid:
+            with patch("builtins.print") as print_mock:
+                self.assertFalse(listener._try_connect())   # pass 1 probes
+                first_calls = set_cid.call_count
+                first_lines = len(print_mock.call_args_list)
+                self.assertGreater(first_calls, 0)
+                for _ in range(2):                           # passes 2, 3
+                    self.assertFalse(listener._try_connect())
+        self.assertEqual(set_cid.call_count, first_calls)
+        # Later passes add at most the one "waiting for a mouse" line.
+        self.assertLessEqual(
+            len(print_mock.call_args_list) - first_lines, 1
+        )
+
+    def test_skip_message_does_not_claim_reprog_is_missing(self):
+        listener = hid_gesture.HidGestureListener()
+        kb = HidReconnectStormTests._info(0xB36A, "AAA MX Keys Mini", b"/dev/kb")
+        mouse = HidReconnectStormTests._info(0xB034, "MX Master 3S", b"/dev/m")
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        with helper._connecting(listener, [kb, mouse], fake_dev):
+            key = hid_gesture._candidate_cooldown_key(kb)
+            listener._reprog_absent_until[key] = time.monotonic() + 100
+            listener._divert_refused.add(key)
+            with patch("builtins.print") as print_mock:
+                self.assertTrue(listener._try_connect())
+        skips = [m for m in HidReconnectStormTests._printed_messages(print_mock)
+                 if "Skipping recently-incompatible" in m]
+        self.assertEqual(len(skips), 1)
+        self.assertNotIn("no REPROG_V4", skips[0])
+
+    def test_solo_reprog_absent_interface_is_still_probed(self):
+        # A sleeping mouse behind a receiver exposes no REPROG_V4 until it
+        # wakes; that case keeps the sole-candidate bypass.
+        listener = hid_gesture.HidGestureListener()
+        info = HidReconnectStormTests._info(0xB034, "MX Master 3S", b"/dev/m")
+        listener._reprog_absent_until[
+            hid_gesture._candidate_cooldown_key(info)
+        ] = time.monotonic() + 100
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        with helper._connecting(listener, [info], fake_dev):
+            self.assertTrue(listener._try_connect())
+
+    def test_cooled_keyboard_is_skipped_when_the_mouse_is_present(self):
+        listener = hid_gesture.HidGestureListener()
+        kb = HidReconnectStormTests._info(0xB36A, "AAA MX Keys Mini", b"/dev/kb")
+        mouse = HidReconnectStormTests._info(0xB034, "MX Master 3S", b"/dev/m")
+        fake_dev = _FakeHidDevice()
+        helper = HidReconnectStormTests()
+        with helper._connecting(listener, [kb, mouse], fake_dev):
+            listener._reprog_absent_until[
+                hid_gesture._candidate_cooldown_key(kb)
+            ] = time.monotonic() + 100
+            self.assertTrue(listener._try_connect())
+        fake_dev.open_path.assert_called_once_with(b"/dev/m")
+
+
+class DivertExtrasTests(unittest.TestCase):
+    def _listener(self, controls):
+        listener = hid_gesture.HidGestureListener(
+            extra_diverts={0x00C4: {"on_down": Mock(), "on_up": Mock()}}
+        )
+        listener._feat_idx = 0x10
+        listener._last_controls = controls
+        return listener
+
+    def test_skips_cids_the_device_does_not_report(self):
+        listener = self._listener([{"cid": 0x00C3}, {"cid": 0x0052}])
+        with patch.object(listener, "_set_cid_reporting") as set_cid:
+            listener._divert_extras()
+        set_cid.assert_not_called()
+
+    def test_diverts_cids_the_device_reports(self):
+        listener = self._listener([{"cid": 0x00C3}, {"cid": 0x00C4}])
+        with patch.object(listener, "_set_cid_reporting",
+                          return_value=object()) as set_cid:
+            listener._divert_extras()
+        set_cid.assert_called_once_with(0x00C4, 0x03)
+
+    def test_empty_control_list_still_tries_every_extra(self):
+        listener = self._listener([])
+        with patch.object(listener, "_set_cid_reporting",
+                          return_value=object()) as set_cid:
+            listener._divert_extras()
+        set_cid.assert_called_once_with(0x00C4, 0x03)
+
+
+@unittest.skipUnless(
+    sys.platform == "darwin" and getattr(hid_gesture, "_MAC_NATIVE_OK", False),
+    "macOS IOKit backend only",
+)
+class MacNativeNotPermittedTests(unittest.TestCase):
+    """kIOReturnNotPermitted is recognised whether IOKit returns it signed
+    (-0x1FFFFD1E, as ctypes does) or unsigned (0xE00002E2)."""
+
+    def _fakes(self, open_result):
+        stack = contextlib.ExitStack()
+        iokit = stack.enter_context(patch.object(hid_gesture, "_iokit"))
+        cf = stack.enter_context(patch.object(hid_gesture, "_cf"))
+        cf.CFStringCreateWithCString.return_value = 0x1
+        cf.CFNumberCreate.return_value = 0x2
+        cf.CFDictionaryCreate.return_value = 0x3
+        iokit.IOHIDManagerCreate.return_value = 0x5678
+        iokit.IOHIDManagerOpen.return_value = open_result
+        return stack, iokit, cf
+
+    def test_open_raises_not_permitted_for_signed_and_unsigned_codes(self):
+        for code in (-0x1FFFFD1E, 0xE00002E2):
+            stack, _iokit, _cf = self._fakes(code)
+            with stack:
+                dev = hid_gesture._MacNativeHidDevice(0xB01A)
+                with self.assertRaises(hid_gesture._IOKitNotPermitted) as cm:
+                    dev.open()
+                self.assertIn("0xE00002E2", str(cm.exception))
+                del dev
+
+    def test_other_open_errors_are_plain_oserrors(self):
+        stack, _iokit, _cf = self._fakes(0xE00002C5)
+        with stack:
+            dev = hid_gesture._MacNativeHidDevice(0xB01A)
+            with self.assertRaises(OSError) as cm:
+                dev.open()
+            self.assertNotIsInstance(cm.exception,
+                                     hid_gesture._IOKitNotPermitted)
+            self.assertIn("IOHIDManagerOpen failed: 0xE00002C5",
+                          str(cm.exception))
+            del dev
+
+    def test_enumerate_raises_not_permitted_and_still_closes_manager(self):
+        stack, iokit, _cf = self._fakes(-0x1FFFFD1E)
+        with stack:
+            with self.assertRaises(hid_gesture._IOKitNotPermitted):
+                hid_gesture._MacNativeHidDevice.enumerate_infos()
+        iokit.IOHIDManagerClose.assert_called_once_with(0x5678, 0)
+
+    def test_device_open_not_permitted_is_detected(self):
+        stack, iokit, cf = self._fakes(0)
+        iokit.IOHIDDeviceOpen.return_value = -0x1FFFFD1E
+        cf.CFSetGetCount.return_value = 1
+        cf.CFRetain.return_value = 0x9
+        iokit.IOHIDManagerCopyDevices.return_value = 0x7
+        with stack:
+            dev = hid_gesture._MacNativeHidDevice(0xB01A)
+            with self.assertRaises(hid_gesture._IOKitNotPermitted):
+                dev.open()
+            del dev
+
+
 if __name__ == "__main__":
     unittest.main()

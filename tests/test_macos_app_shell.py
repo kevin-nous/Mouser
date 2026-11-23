@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 try:
-    import main_qml
+    from tests._log_isolation import import_main_qml
+    main_qml = import_main_qml()
 except Exception:  # pragma: no cover - env without PySide6 / project deps
     main_qml = None
 
