@@ -88,6 +88,12 @@ _BTN_FORWARD = 4
 # CGEvent button number -> per-button gesture owner name (core.config GESTURE_OWNERS).
 _BTN_TO_OWNER = {_BTN_BACK: "back", _BTN_FORWARD: "forward", _BTN_MIDDLE: "middle"}
 _SCROLL_INVERT_MARKER = 0x4D4F5553
+# CGEvent scroll fields (raw ids, as Quartz exports no constants for them).
+# Logitech hi-res wheels set IsContinuous like a trackpad, but only
+# trackpads / Magic Mice carry a gesture or momentum phase.
+_SCROLL_IS_CONTINUOUS_FIELD = 88
+_SCROLL_PHASE_FIELD = 99
+_SCROLL_MOMENTUM_PHASE_FIELD = 123
 _INJECTED_EVENT_MARKER = 0x4D4F5554
 # Maps vertical wheel delta -> horizontal scroll delta for the hold modifier
 # (issue 011). +1/-1 only; which sign yields the PRD default "wheel up -> content
@@ -257,6 +263,22 @@ class MouseHook(BaseMouseHook):
         armed gesture."""
         if self._hold_claim == "hscroll":
             self._reset_event_tap_gesture_state()
+
+    @staticmethod
+    def _is_trackpad_scroll(cg_event):
+        """True for trackpad / Magic Mouse scrolls, False for a physical wheel.
+
+        A hi-res mouse wheel (MX Anywhere 2S) is also "continuous", so that
+        flag alone cannot tell it from a trackpad. Trackpad scrolls carry a
+        scroll phase or a momentum phase; a wheel carries neither.
+        """
+        get = Quartz.CGEventGetIntegerValueField
+        if not get(cg_event, _SCROLL_IS_CONTINUOUS_FIELD):
+            return False
+        return bool(
+            get(cg_event, _SCROLL_PHASE_FIELD)
+            or get(cg_event, _SCROLL_MOMENTUM_PHASE_FIELD)
+        )
 
     def _try_hscroll_modifier_divert(self, cg_event):
         """If the hold-modifier button is held (and a slide gesture hasn't claimed
@@ -866,10 +888,8 @@ class MouseHook(BaseMouseHook):
                 # hi-res wheel reports continuous, which ignore_trackpad swallows.
                 if self._try_hscroll_modifier_divert(cg_event):
                     return None
-                if self.ignore_trackpad:
-                    is_continuous_field = 88
-                    if Quartz.CGEventGetIntegerValueField(cg_event, is_continuous_field):
-                        return cg_event
+                if self.ignore_trackpad and self._is_trackpad_scroll(cg_event):
+                    return cg_event
                 h_delta = Quartz.CGEventGetIntegerValueField(
                     cg_event, Quartz.kCGScrollWheelEventFixedPtDeltaAxis2
                 )

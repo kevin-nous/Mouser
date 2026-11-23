@@ -4,7 +4,8 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 try:
-    import main_qml
+    from tests._log_isolation import import_main_qml
+    main_qml = import_main_qml()
     from PySide6.QtWidgets import QApplication
     from PySide6.QtNetwork import QLocalServer
 except Exception:  # pragma: no cover - env without PySide6 / project deps

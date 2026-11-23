@@ -889,6 +889,9 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
     """Verify CGEventTap callback passes through trackpad events untouched."""
 
     _kCGScrollWheelEventIsContinuous = 88
+    _kCGScrollWheelEventScrollPhase = 99
+    _kCGScrollWheelEventMomentumPhase = 123
+    _PHASE_CHANGED = 4  # kCGScrollPhaseChanged
     _kCGEventScrollWheel = 22  # Quartz.kCGEventScrollWheel
 
     def setUp(self):
@@ -910,12 +913,18 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
         hook.block(mouse_hook.MouseEvent.HSCROLL_RIGHT)
         return hook
 
-    def _mock_get_field(self, is_continuous, source_user_data=0):
-        """side_effect: returns is_continuous for field 88, source_user_data
-        for kCGEventSourceUserData, and 0 for everything else."""
+    def _mock_get_field(self, is_continuous, source_user_data=0,
+                        scroll_phase=0, momentum_phase=0):
+        """side_effect: returns is_continuous for field 88, the phases for
+        fields 99/123, source_user_data for kCGEventSourceUserData, and 0 for
+        everything else."""
         def _get(event, field):
             if field == self._kCGScrollWheelEventIsContinuous:
                 return is_continuous
+            if field == self._kCGScrollWheelEventScrollPhase:
+                return scroll_phase
+            if field == self._kCGScrollWheelEventMomentumPhase:
+                return momentum_phase
             if field == self.mock_quartz.kCGEventSourceUserData:
                 return source_user_data
             return 0
@@ -926,7 +935,8 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
         hook = self._make_hook()
         cg_event = MagicMock(name="cg_event")
         self.mock_quartz.CGEventGetIntegerValueField.side_effect = \
-            self._mock_get_field(is_continuous=1)
+            self._mock_get_field(is_continuous=1,
+                                 scroll_phase=self._PHASE_CHANGED)
 
         result = hook._event_tap_callback(
             None, self._kCGEventScrollWheel, cg_event, None)
@@ -934,6 +944,57 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
         self.assertIs(result, cg_event)
         # Verify no HSCROLL events were dispatched
         self.assertTrue(hook._dispatch_queue.empty())
+
+    def test_trackpad_momentum_scroll_passes_through_callback(self):
+        """Momentum-only events (scroll phase 0, momentum phase != 0) are
+        still trackpad events and must be ignored."""
+        hook = self._make_hook()
+        cg_event = MagicMock(name="cg_event")
+        self.mock_quartz.CGEventGetIntegerValueField.side_effect = \
+            self._mock_get_field(is_continuous=1, momentum_phase=2)
+
+        with patch.object(hook, "_post_inverted_scroll_event") as post:
+            result = hook._event_tap_callback(
+                None, self._kCGEventScrollWheel, cg_event, None)
+
+        self.assertIs(result, cg_event)
+        post.assert_not_called()
+
+    def test_hires_mouse_wheel_still_inverts_vscroll(self):
+        """Regression: a Logitech hi-res wheel sets IsContinuous but has no
+        scroll/momentum phase, so ignore_trackpad must not skip it."""
+        hook = self._make_hook()
+        self.assertTrue(hook.ignore_trackpad)
+        cg_event = MagicMock(name="cg_event")
+        self.mock_quartz.CGEventGetIntegerValueField.side_effect = \
+            self._mock_get_field(is_continuous=1)
+
+        with patch.object(hook, "_post_inverted_scroll_event",
+                          return_value=True) as post:
+            result = hook._event_tap_callback(
+                None, self._kCGEventScrollWheel, cg_event, None)
+
+        post.assert_called_once_with(cg_event)
+        self.assertIsNone(result)  # original swallowed, inverted one posted
+
+    def test_hires_mouse_wheel_hscroll_dispatched_and_blocked(self):
+        """Regression: hscroll_left/right bindings fire on a hi-res wheel."""
+        hook = self._make_hook()
+        cg_event = MagicMock(name="cg_event")
+        phase_free = self._mock_get_field(is_continuous=1)
+
+        def _get(event, field):
+            if field == self.mock_quartz.kCGScrollWheelEventFixedPtDeltaAxis2:
+                return -3 * 65536  # negative = HSCROLL_LEFT
+            return phase_free(event, field)
+        self.mock_quartz.CGEventGetIntegerValueField.side_effect = _get
+
+        result = hook._event_tap_callback(
+            None, self._kCGEventScrollWheel, cg_event, None)
+
+        self.assertIsNone(result)
+        event = hook._dispatch_queue.get_nowait()
+        self.assertEqual(event.event_type, mouse_hook.MouseEvent.HSCROLL_LEFT)
 
     def test_trackpad_hscroll_not_blocked(self):
         """Trackpad horizontal scroll must NOT trigger hscroll action."""
@@ -943,6 +1004,8 @@ class MacOSTrackpadScrollFilterTests(unittest.TestCase):
         def _get(event, field):
             if field == self._kCGScrollWheelEventIsContinuous:
                 return 1  # trackpad
+            if field == self._kCGScrollWheelEventScrollPhase:
+                return self._PHASE_CHANGED
             if field == self.mock_quartz.kCGScrollWheelEventFixedPtDeltaAxis2:
                 return 5 * 65536  # non-zero horizontal delta
             if field == self.mock_quartz.kCGEventSourceUserData:
